@@ -290,10 +290,10 @@
     const rows = categories.map(c => {
       const done = !!myVotes[c.n];
       const cv = coverDims(coversByCat[c.n]);
-      // высота кнопки = ширина списка × пропорции загруженной картинки (обрезаны minmax),
-      // т.е. размер кнопок автоматически подстраивается под размер обложки
+      // высота кнопки = ширина списка × пропорции загруженной картинки —
+      // размер кнопок автоматически подстраивается под размер обложки, картинка целиком (без обрезки)
       const ratio = cv && cv.w > 0 && cv.h > 0 ? cv.w / cv.h : 16 / 9;
-      const vars = cv ? `--cover:url('${esc(cv.url)}');--rowH:clamp(74px,calc(100% * ${ratio.toFixed(4)}),260px)` : '';
+      const vars = cv ? `--cover:url('${esc(cv.url)}');--rowH:calc(100% * ${ratio.toFixed(4)})` : '';
       return `<button class="categoryRow ${selected.n === c.n ? 'active' : ''} ${done ? 'done' : ''} ${cv ? 'hasCover' : ''}" data-category="${c.n}" style="${vars}"><span class="crNum">${c.n}</span><strong>${esc(c.title)}</strong><i>${done ? '✓' : '↗'}</i></button>`;
     }).join('');
     const doneCount = Object.keys(myVotes).length;
@@ -483,17 +483,31 @@
     root.innerHTML = `
       <div class="adminHead">
         <div><div class="heroKicker">ГРЕЧКА 2026${directAdmin ? ' · РЕЖИМ GITHUB PAGES' : ''}</div><h1>АДМИНКА</h1></div>
-        <div class="adminTabs"><button data-tab="covers" class="${tab === 'covers' ? 'on' : ''}">ОБЛОЖКИ</button>${directAdmin ? '' : '<button data-tab="videos" class="' + (tab === 'videos' ? 'on' : '') + '">НОМИНАЦИИ</button><button data-tab="people">ФОТО</button><button data-tab="results">ВЫБОР ЛЮДЕЙ</button>'}<button data-tab="out">ВЫЙТИ</button></div>
+        <div class="adminTabs"><button data-tab="covers" class="${tab === 'covers' ? 'on' : ''}">ОБЛОЖКИ</button>${directAdmin ? '' : '<button data-tab="videos" class="' + (tab === 'videos' ? 'on' : '') + '">НОМИНАЦИИ</button>'}<button data-tab="people">ФОТО</button>${directAdmin ? '' : '<button data-tab="results">ВЫБОР ЛЮДЕЙ</button>'}<button data-tab="out">ВЫЙТИ</button></div>
       </div>
       <div id="adminBody"></div>`;
     const body = document.getElementById('adminBody');
 
     const reload = async () => {
-      // режим GitHub Pages (ключи Supabase сохранены): сервер не нужен —
-      // обновляем кэш обложек напрямую из БД и перерисовываем активную вкладку
+      // режим GitHub Pages (ключи Supabase сохранены): сервер не нужен.
+      // Обложки обновляем напрямую из БД; для остальных вкладок тянем из Supabase
+      // номинантов и голоса, чтобы работал подсчёт участников в номинации.
       if (directAdmin) {
         await loadCoversFromSupabaseDirect().catch(() => {});
-        drawCovers();
+        if (tab === 'videos' || tab === 'results') {
+          const cfgR = sbCfg();
+          try {
+            const [vids, votes] = await Promise.all([
+              sbDirect('/rest/v1/videos?select=id,category,title,size,kind&order=created_at.asc', {}, cfgR),
+              sbDirect('/rest/v1/votes?select=voter_id,category,video_id', {}, cfgR)
+            ]);
+            overview = {
+              videos: (Array.isArray(vids) ? vids : []).map(v => ({ ...v, url: '', voters: (Array.isArray(votes) ? votes : []).filter(t => t.video_id === v.id) })),
+              voters: []
+            };
+          } catch { /* нет доступа к этим таблицам — оставляем что есть */ }
+        }
+        if (tab === 'covers') drawCovers(); else draw();
         return;
       }
       try {
@@ -525,7 +539,8 @@
 
     // счётчик номинантов для списка слева (обложки CV и фото PP не считаем)
     const catCount = (c) => overview.videos.filter(v => v.category === c.n).length;
-    const coverOf = (c) => overview.videos.find(v => v.category === 'CV' && v.title === c);
+    // title обложек в БД вида «01 1280x720» — сравниваем только номер номинации
+    const coverOf = (c) => overview.videos.find(v => v.category === 'CV' && String(v.title).match(/^(\d{2})(?: \d+x\d+)?$/)?.[1] === c);
 
     function drawVideos() {
       const list = overview.videos.filter(v => v.category === cat);
@@ -608,6 +623,7 @@
       const rows = await sbDirect('/rest/v1/videos?select=id,title,path,size,created_at&category=eq.CV&order=created_at.asc', {}, cfg);
       const map = {};
       for (const v of Array.isArray(rows) ? rows : []) {
+        // title обложки: «01» или «01 1280x720» — номер номинации + реальные размеры картинки
         const m = String(v.title || '').match(/^(\d{2})(?:\s+(\d+)x(\d+))?$/);
         if (!m) continue;
         const path = String(v.path || '').split('/').map(encodeURIComponent).join('/');
@@ -615,6 +631,24 @@
       }
       return map;
     }
+    // размеры обложек из кэша coversByCat (серверный /api или прямая загрузка из Supabase)
+    const coverDimsFromCache = (cNum) => {
+      const cv = coverDims(coversByCat[cNum]);
+      return cv && cv.w > 0 && cv.h > 0 ? cv : null;
+    };
+    // подтягиваем настоящие пиксели картинок, если в записи БД размеров нет (старые загрузки)
+    function ensureCoverDims(map) {
+      for (const cNum of Object.keys(map)) {
+        const cv = map[cNum];
+        if (cv.w === 16 && cv.h === 9) { // размеры не были записаны — узнаём по самой картинке
+          const img = new Image();
+          img.onload = () => { cv.w = img.naturalWidth || 16; cv.h = img.naturalHeight || 9; drawCoversQuiet(); };
+          img.src = cv.url;
+        }
+      }
+    }
+    let coversRedrawTimer = null;
+    function drawCoversQuiet() { clearTimeout(coversRedrawTimer); coversRedrawTimer = setTimeout(() => { if (document.getElementById('adminBody')) drawCovers(); }, 300); }
     async function directCoverUpload(cfg, cNum, file, onProgress) {
       const ext = (file.name.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || 'jpg';
       const dims = await new Promise((res) => {
@@ -649,7 +683,7 @@
     function coverCardHtml(c, cv) {
       return `<div class="cvCard" data-cat="${c.n}">
         <div class="cvImg ${cv ? 'on' : ''}" style="${cv ? `aspect-ratio:${cv.w}/${cv.h}` : ''}">${cv ? `<img src="${esc(cv.url)}" alt="" loading="lazy">` : '<small>без обложки</small>'}</div>
-        <b>${c.n} · ${esc(c.title)}</b>${cv ? `<small class="cvDims">${cv.w}×${cv.h} px · кнопки подстроятся автоматически</small>` : ''}
+        <b>${c.n} · ${esc(c.title)}</b><small class="cvDims">${cv ? `${cv.w}×${cv.h} px · кнопки подстроятся автоматически` : 'кнопка номинации будет стандартной'}</small>
         <div class="cvActions"><button class="ghostBtn cvUpload" data-cat="${c.n}">${cv ? 'ЗАМЕНИТЬ' : 'ЗАГРУЗИТЬ'}</button>${cv ? `<button class="ghostBtn danger cvRemove" data-cat="${c.n}">УБРАТЬ</button>` : ''}</div>
         <input type="file" accept="image/*" hidden data-cat="${c.n}">
         <div class="paStatus"></div>
@@ -683,6 +717,7 @@
       bindCoverButtons();
       if (directMode) { // список обложек тянем из самой БД
         directCoverList(cfg).then((map) => {
+          ensureCoverDims(map); // если размеры не записаны в title — узнаём их по картинке
           categories.forEach(c => {
             const card = body.querySelector(`.cvCard[data-cat="${c.n}"]`);
             if (!card) return;
@@ -691,6 +726,20 @@
           });
           bindCoverButtons();
         }).catch(() => {});
+      } else {
+        // серверный режим: id/path есть в overview.videos, размеры берём из кэша обложек
+        const map = {};
+        for (const c of categories) {
+          const v = coverOf(c.n);
+          const dims = coverDimsFromCache(c.n);
+          if (v) map[c.n] = { ...v, url: v.url, w: dims?.w || 16, h: dims?.h || 9 };
+        }
+        ensureCoverDims(map);
+        categories.forEach(c => {
+          const card = body.querySelector(`.cvCard[data-cat="${c.n}"]`);
+          if (card && map[c.n]) card.outerHTML = coverCardHtml(c, map[c.n]);
+        });
+        bindCoverButtons();
       }
     }
 

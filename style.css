@@ -198,10 +198,14 @@ body{min-height:100%;overflow-x:hidden}
 .vChoices{display:flex;flex-wrap:wrap;gap:6px 8px}.vChoices span{font-size:11px;color:#b7b2a6;padding:4px 10px;background:rgba(255,255,255,.04)}.vChoices em{font-style:normal;color:#7a7360;margin-right:4px}.vChoices b{color:var(--gold2);font-weight:600}.vChoices small{color:#6f6a5c}
 @media(max-width:900px){.adminCols{grid-template-columns:1fr}.adminCats{position:static;max-height:260px;overflow:auto}.voterRow{grid-template-columns:1fr}.resultList{grid-template-columns:1fr}}
 
-/* ===== Обложки номинаций 16:9 (фон кнопок в списке категорий) ===== */
+/* ===== Обложки номинаций (фон кнопок в списке категорий) ===== */
 .categoryRow{position:relative;isolation:isolate;overflow:hidden;height:var(--rowH,auto)}
+/* когда у кнопки есть обложка — текст поверх картинки, читаемость через тень/градиент */
+.categoryRow.hasCover{align-content:center;padding-top:0;padding-bottom:0}
+.categoryRow.hasCover .crNum,.categoryRow.hasCover i{text-shadow:0 1px 8px rgba(0,0,0,.9)}
+.categoryRow.hasCover strong{text-shadow:0 2px 14px rgba(0,0,0,.9),0 0 40px rgba(0,0,0,.7)}
 .categoryRow .crNum,.categoryRow strong,.categoryRow i{position:relative;z-index:2}
-.categoryRow:before{content:"";position:absolute;inset:-2px;z-index:0;background-image:var(--cover,none);background-size:cover;background-position:center 40%;opacity:0;transform:scale(1.03);transition:opacity .5s ease,transform .8s cubic-bezier(.16,1,.3,1),filter .5s ease;filter:grayscale(.7) brightness(.55)}
+.categoryRow:before{content:"";position:absolute;inset:0;z-index:0;background-image:var(--cover,none);background-size:100% 100%;background-position:center;background-repeat:no-repeat;opacity:0;transition:opacity .5s ease,filter .5s ease;filter:grayscale(.7) brightness(.55)}
 .categoryRow:after{content:"";position:absolute;inset:0;z-index:1;background:linear-gradient(90deg,rgba(6,6,6,.92) 0%,rgba(6,6,6,.72) 38%,rgba(6,6,6,.28) 75%,rgba(6,6,6,.45) 100%);opacity:0;transition:opacity .5s ease}
 .categoryRow.hasCover:before{opacity:.85}
 .categoryRow.hasCover:after{opacity:1}
