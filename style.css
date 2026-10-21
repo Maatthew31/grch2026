@@ -199,7 +199,8 @@ body{min-height:100%;overflow-x:hidden}
 @media(max-width:900px){.adminCols{grid-template-columns:1fr}.adminCats{position:static;max-height:260px;overflow:auto}.voterRow{grid-template-columns:1fr}.resultList{grid-template-columns:1fr}}
 
 /* ===== Обложки номинаций (фон кнопок в списке категорий) ===== */
-.categoryRow{position:relative;isolation:isolate;overflow:hidden;height:var(--rowH,auto)}
+.categoryList{container-type:inline-size} /* 100cqw = точная ширина кнопки в пикселях */
+.categoryRow{position:relative;isolation:isolate;overflow:hidden;--rowW:100cqw;height:var(--rowH,auto)}
 /* когда у кнопки есть обложка — текст поверх картинки, читаемость через тень/градиент */
 .categoryRow.hasCover{align-content:center;padding-top:0;padding-bottom:0}
 .categoryRow.hasCover .crNum,.categoryRow.hasCover i{text-shadow:0 1px 8px rgba(0,0,0,.9)}

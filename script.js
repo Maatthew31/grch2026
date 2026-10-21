@@ -96,12 +96,28 @@
   }).catch(() => {});
 
   // обложка: { url, w, h } (старый формат — просто строка url, считаем 16:9)
-  const coverDims = (c) => typeof c === 'string' ? { url: c, w: 16, h: 9 } : (c || null);
+  // размеры обложки: «1280x720» из строки title БД либо из объекта {url,w,h};
+  // если реальных пикселей нет — честные пропорции 16:9 (1280×720), а НЕ «16 на 9 пикселей»
+  const parseCoverDims = (s) => { const m = String(s || '').match(/^(?:.*?\s)?(\d+)x(\d+)$/); return m ? { w: +m[1], h: +m[2] } : null; };
+  const coverDims = (c) => {
+    if (!c) return null;
+    if (typeof c === 'string') { const d = parseCoverDims(c) || { w: 1280, h: 720 }; return { url: '', ...d }; }
+    const w = +c.w > 0 && +c.h > 0 ? +c.w : 1280, h = +c.w > 0 && +c.h > 0 ? +c.h : 720;
+    return { url: c.url, w, h };
+  };
 
   async function loadVideos() {
     try {
       const d = await api('/api/videos');
       videosByCat = d.videos; myVotes = d.myVotes; coversByCat = d.covers || {};
+      // если в БД размеры обложек не записаны (w/h = 0) — узнаём настоящие пиксели по картинкам
+      for (const [n, cv] of Object.entries(coversByCat)) {
+        if (cv && !(cv.w > 0 && cv.h > 0)) {
+          const img = new Image();
+          img.onload = () => { cv.w = img.naturalWidth || 1280; cv.h = img.naturalHeight || 720; };
+          img.src = cv.url;
+        }
+      }
     } catch (e) {
       if (e.status === 401) { store.voter = null; navigate('login'); throw e; }
       // Сервер недоступен (сайт открыт как статика с GitHub Pages).
@@ -138,7 +154,17 @@
       const m = String(v.title || '').match(/^(\d{2})(?:\s+(\d+)x(\d+))?$/);
       if (!m) continue;
       const path = String(v.path || '').split('/').map(encodeURIComponent).join('/');
-      out[m[1]] = { url: `${base}/storage/v1/object/public/covers/${path}`, w: +(m[2] || 16), h: +(m[3] || 9) };
+      let w = +(m[2] || 0), h = +(m[3] || 0);
+      if (!(w > 0 && h > 0)) { // размеры не записаны в title — узнаём настоящие пиксели по картинке
+        try {
+          const probe = await new Promise((res, rej) => {
+            const im = new Image(); im.onload = () => res(im); im.onerror = rej;
+            im.src = `${base}/storage/v1/object/public/covers/${path}`;
+          });
+          w = probe.naturalWidth || 1280; h = probe.naturalHeight || 720;
+        } catch { w = 1280; h = 720; }
+      }
+      out[m[1]] = { url: `${base}/storage/v1/object/public/covers/${path}`, w, h };
     }
     coversByCat = out;
   }
@@ -292,8 +318,10 @@
       const cv = coverDims(coversByCat[c.n]);
       // высота кнопки = ширина списка × пропорции загруженной картинки —
       // размер кнопок автоматически подстраивается под размер обложки, картинка целиком (без обрезки)
-      const ratio = cv && cv.w > 0 && cv.h > 0 ? cv.w / cv.h : 16 / 9;
-      const vars = cv ? `--cover:url('${esc(cv.url)}');--rowH:calc(100% * ${ratio.toFixed(4)})` : '';
+      // --rowW = ширина кнопки в пикселях (задаётся CSS через 100cqw),
+      // --rowH = width × h/w → кнопка ровно по пропорциям картинки (1280×720 → 16:9)
+      const ratio = cv && cv.w > 0 && cv.h > 0 ? cv.h / cv.w : 9 / 16;
+      const vars = cv ? `--cover:url('${esc(cv.url)}');--rowH:calc(var(--rowW,100%) * ${ratio.toFixed(5)})` : '';
       return `<button class="categoryRow ${selected.n === c.n ? 'active' : ''} ${done ? 'done' : ''} ${cv ? 'hasCover' : ''}" data-category="${c.n}" style="${vars}"><span class="crNum">${c.n}</span><strong>${esc(c.title)}</strong><i>${done ? '✓' : '↗'}</i></button>`;
     }).join('');
     const doneCount = Object.keys(myVotes).length;
@@ -473,9 +501,10 @@
 
   function adminDashboard() {
     const root = document.getElementById('adminRoot');
+    if (!root) return; // админку уже закрыли/перерисовали — выходим молча (иначе краш выбрасывает из админки)
     const cfgD = sbCfg();
     const directAdmin = store.admin === 'direct' || !!(cfgD && sbBase(cfgD.u) && String(cfgD.k || '').trim());
-    let tab = directAdmin ? 'covers' : 'videos';
+    let tab = 'covers';
     let cat = categories[0].n;
     let overview = { videos: [], voters: [] };
     const queue = []; // { id, name, pct, state, error }
@@ -483,7 +512,7 @@
     root.innerHTML = `
       <div class="adminHead">
         <div><div class="heroKicker">ГРЕЧКА 2026${directAdmin ? ' · РЕЖИМ GITHUB PAGES' : ''}</div><h1>АДМИНКА</h1></div>
-        <div class="adminTabs"><button data-tab="covers" class="${tab === 'covers' ? 'on' : ''}">ОБЛОЖКИ</button>${directAdmin ? '' : '<button data-tab="videos" class="' + (tab === 'videos' ? 'on' : '') + '">НОМИНАЦИИ</button>'}<button data-tab="people">ФОТО</button>${directAdmin ? '' : '<button data-tab="results">ВЫБОР ЛЮДЕЙ</button>'}<button data-tab="out">ВЫЙТИ</button></div>
+        <div class="adminTabs"><button data-tab="covers" class="${tab === 'covers' ? 'on' : ''}">ОБЛОЖКИ</button><button data-tab="videos" class="${tab === 'videos' ? 'on' : ''}">НОМИНАЦИИ</button><button data-tab="people">ФОТО</button>${directAdmin ? '' : '<button data-tab="results">ВЫБОР ЛЮДЕЙ</button>'}<button data-tab="out">ВЫЙТИ</button></div>
       </div>
       <div id="adminBody"></div>`;
     const body = document.getElementById('adminBody');
@@ -493,20 +522,30 @@
       // Обложки обновляем напрямую из БД; для остальных вкладок тянем из Supabase
       // номинантов и голоса, чтобы работал подсчёт участников в номинации.
       if (directAdmin) {
+        const cfgR = sbCfg();
+        // НОМИНАЦИИ в режиме GitHub Pages: тянем номинантов и голоса напрямую из БД,
+        // иначе счётчик участников в номинации не работает.
+        try {
+          const [vids, votes] = await Promise.all([
+            sbDirect('/rest/v1/videos?select=id,category,title,path,size,kind,created_at&order=created_at.asc', {}, cfgR),
+            sbDirect('/rest/v1/votes?select=voter_id,category,video_id', {}, cfgR)
+          ]);
+          const allVids = Array.isArray(vids) ? vids : [];
+          const allVotes = Array.isArray(votes) ? votes : [];
+          // превью номинантов берём из приватного bucket «videos» — подписываем URL через Supabase API
+          const signUrl = async (path) => {
+            try {
+              const d = await sbDirect(`/storage/v1/object/sign/videos/${String(path || '').split('/').map(encodeURIComponent).join('/')}`,
+                { method: 'POST', body: JSON.stringify({ expiresIn: 3600 }) }, cfgR);
+              return `${sbBase(cfgR.u)}${d.signedURL || d.url || ''}`;
+            } catch { return ''; }
+          };
+          const normVideos = allVids.filter(v => v.category !== 'CV');
+          await Promise.all(normVideos.map(async v => { v.url = await signUrl(v.path); }));
+          for (const v of normVideos) v.voters = allVotes.filter(t => t.video_id === v.id);
+          overview = { videos: normVideos, voters: [] };
+        } catch (e) { console.warn('Supabase direct overview:', e.message || e); }
         await loadCoversFromSupabaseDirect().catch(() => {});
-        if (tab === 'videos' || tab === 'results') {
-          const cfgR = sbCfg();
-          try {
-            const [vids, votes] = await Promise.all([
-              sbDirect('/rest/v1/videos?select=id,category,title,size,kind&order=created_at.asc', {}, cfgR),
-              sbDirect('/rest/v1/votes?select=voter_id,category,video_id', {}, cfgR)
-            ]);
-            overview = {
-              videos: (Array.isArray(vids) ? vids : []).map(v => ({ ...v, url: '', voters: (Array.isArray(votes) ? votes : []).filter(t => t.video_id === v.id) })),
-              voters: []
-            };
-          } catch { /* нет доступа к этим таблицам — оставляем что есть */ }
-        }
         if (tab === 'covers') drawCovers(); else draw();
         return;
       }
@@ -627,7 +666,7 @@
         const m = String(v.title || '').match(/^(\d{2})(?:\s+(\d+)x(\d+))?$/);
         if (!m) continue;
         const path = String(v.path || '').split('/').map(encodeURIComponent).join('/');
-        map[m[1]] = { id: v.id, path: v.path, url: `${sbBase(cfg.u)}/storage/v1/object/public/covers/${path}`, w: +(m[2] || 16), h: +(m[3] || 9) };
+        map[m[1]] = { id: v.id, path: v.path, url: `${sbBase(cfg.u)}/storage/v1/object/public/covers/${path}`, w: +(m[2] || 0) || null, h: +(m[3] || 0) || null };
       }
       return map;
     }
@@ -636,16 +675,20 @@
       const cv = coverDims(coversByCat[cNum]);
       return cv && cv.w > 0 && cv.h > 0 ? cv : null;
     };
-    // подтягиваем настоящие пиксели картинок, если в записи БД размеров нет (старые загрузки)
+    // подтягиваем настоящие пиксели картинок, если в записях БД размеров нет (старые загрузки)
     function ensureCoverDims(map) {
+      let changed = false;
       for (const cNum of Object.keys(map)) {
         const cv = map[cNum];
-        if (cv.w === 16 && cv.h === 9) { // размеры не были записаны — узнаём по самой картинке
+        if (!(cv.w > 0 && cv.h > 0)) { // размеры не были записаны — узнаём по самой картинке
+          changed = true;
           const img = new Image();
-          img.onload = () => { cv.w = img.naturalWidth || 16; cv.h = img.naturalHeight || 9; drawCoversQuiet(); };
+          img.onload = () => { cv.w = img.naturalWidth || 1280; cv.h = img.naturalHeight || 720; drawCoversQuiet(); };
+          img.onerror = () => { cv.w = 1280; cv.h = 720; };
           img.src = cv.url;
         }
       }
+      return changed;
     }
     let coversRedrawTimer = null;
     function drawCoversQuiet() { clearTimeout(coversRedrawTimer); coversRedrawTimer = setTimeout(() => { if (document.getElementById('adminBody')) drawCovers(); }, 300); }
@@ -682,7 +725,7 @@
 
     function coverCardHtml(c, cv) {
       return `<div class="cvCard" data-cat="${c.n}">
-        <div class="cvImg ${cv ? 'on' : ''}" style="${cv ? `aspect-ratio:${cv.w}/${cv.h}` : ''}">${cv ? `<img src="${esc(cv.url)}" alt="" loading="lazy">` : '<small>без обложки</small>'}</div>
+        <div class="cvImg ${cv && cv.url ? 'on' : ''}" style="${cv ? `aspect-ratio:${cv.w}/${cv.h}` : ''}">${cv && cv.url ? `<img src="${esc(cv.url)}" alt="" loading="lazy">` : `<small>${cv ? `${cv.w}×${cv.h} px · ждём ссылку…` : 'без обложки'}</small>`}</div>
         <b>${c.n} · ${esc(c.title)}</b><small class="cvDims">${cv ? `${cv.w}×${cv.h} px · кнопки подстроятся автоматически` : 'кнопка номинации будет стандартной'}</small>
         <div class="cvActions"><button class="ghostBtn cvUpload" data-cat="${c.n}">${cv ? 'ЗАМЕНИТЬ' : 'ЗАГРУЗИТЬ'}</button>${cv ? `<button class="ghostBtn danger cvRemove" data-cat="${c.n}">УБРАТЬ</button>` : ''}</div>
         <input type="file" accept="image/*" hidden data-cat="${c.n}">
@@ -705,6 +748,16 @@
           </div>
           <div class="coverGrid">${categories.map(c => coverCardHtml(c, directMode ? null : coverOf(c.n))).join('')}</div>
         </div>`;
+
+      // если размеры уже известны из кэша обложек (картинки для страницы номинаций) — показываем их сразу
+      categories.forEach(c => {
+        const cached = coverDims(coversByCat[c.n]);
+        if (!cached || !(cached.w > 0 && cached.h > 0)) return;
+        const card = body.querySelector(`.cvCard[data-cat="${c.n}"] .cvImg`);
+        if (card && !card.classList.contains('on') && /px/.test(card.textContent)) {
+          card.outerHTML = `<div class="cvImg ${cached.url ? 'on' : ''}" style="aspect-ratio:${cached.w}/${cached.h}">${cached.url ? `<img src="${esc(cached.url)}" alt="" loading="lazy">` : `<small>${cached.w}×${cached.h} px</small>`}</div>`;
+        }
+      });
 
       document.getElementById('sbSave').onclick = () => {
         const u = sbBase(document.getElementById('sbUrl').value), k = String(document.getElementById('sbKey').value || '').trim();
@@ -732,7 +785,7 @@
         for (const c of categories) {
           const v = coverOf(c.n);
           const dims = coverDimsFromCache(c.n);
-          if (v) map[c.n] = { ...v, url: v.url, w: dims?.w || 16, h: dims?.h || 9 };
+          if (v) map[c.n] = { ...v, url: v.url, w: dims?.w || null, h: dims?.h || null };
         }
         ensureCoverDims(map);
         categories.forEach(c => {
@@ -759,7 +812,8 @@
             let res;
             if (directMode) {
               res = await directCoverUpload(cfg, cNum, f);
-              coversByCat[cNum] = { url: (await directCoverList(cfg))[cNum]?.url, w: res.width, h: res.height };
+              const fresh = (await directCoverList(cfg))[cNum];
+              coversByCat[cNum] = { url: fresh?.url, w: res.width || fresh?.w || 1280, h: res.height || fresh?.h || 720 };
             } else {
               res = await uploadWithRetry(`/api/admin/cover?category=${cNum}&name=${encodeURIComponent(f.name)}`, f, (p) => { st.textContent = `Загрузка… ${p}%`; });
               if (res && res.url) coversByCat[cNum] = { url: res.url, w: res.width || 16, h: res.height || 9 };
@@ -927,6 +981,10 @@
     }
 
     function drawResults() {
+      if (!overview.voters.length) { // режим GitHub Pages: голосов через БД без сервера не видно
+        body.innerHTML = `<div class="adminMain"><h2>Выбор людей</h2><p class="adminHint">В режиме GitHub Pages список голосов недоступен — здесь он работает только с запущенным server.js. Количество номинантов в каждой номинации смотрите во вкладке «НОМИНАЦИИ».</p></div>`;
+        return;
+      }
       const total = overview.voters.reduce((n, v) => n + v.choices.length, 0);
       body.innerHTML = `
         <div class="statRow"><div><b>${overview.voters.length}</b><small>ЗРИТЕЛЕЙ</small></div><div><b>${total}</b><small>ГОЛОСОВ ВСЕГО</small></div><div><b>${overview.videos.filter(v => v.category !== 'CV' && v.category !== 'PP').length}</b><small>НОМИНАНТОВ</small></div></div>
