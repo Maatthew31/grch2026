@@ -26,7 +26,17 @@ const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
+// Uploads are streamed raw; make sure proxies never buffer the whole body.
+app.use((req, res, next) => {
+  if (req.method === 'PUT') req.setTimeout(600000, () => {});
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 app.use(express.static(__dirname, { index: 'index.html', maxAge: '1h' }));
+
+// SPA-навигация: любой неизвестный GET возвращаем index.html,
+// чтобы F5 и прямые заходы работали на любой странице сайта
+app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 // ---------- helpers ----------
 const uid = () => crypto.randomUUID();
@@ -111,6 +121,30 @@ async function fetchFile(url, rangeHeader) {
   } finally { clearTimeout(timer); }
 }
 
+// Стриминг файла из Supabase Storage напрямую в ответ (без загрузки всего ролика в память).
+// Экономит RAM на маленьком Render-сервисе и отдаёт видео быстрее.
+async function streamFile(res, signedUrl, headers, status) {
+  const r = await fetch(signedUrl, { headers });
+  if (!r.ok && r.status !== 206) throw new Error(`Supabase Storage ответил ${r.status}`);
+  res.status(status);
+  const reader = r.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!res.write(value)) {
+        await new Promise((resolve, reject) => {
+          res.once('drain', resolve);
+          res.once('error', reject);
+        }).catch(() => { try { reader.cancel(); } catch {} return; });
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch {}
+    res.end();
+  }
+}
+
 app.get('/api/video/:id', async (req, res) => {
   try {
     const { data: v } = await db.from('videos').select('path,kind,title').eq('id', req.params.id).maybeSingle();
@@ -120,35 +154,39 @@ app.get('/api/video/:id', async (req, res) => {
     const { data: signed, error } = await db.storage.from('videos').createSignedUrl(v.path, 60 * 60);
     if (error) throw error;
 
-    let buf, status = 200, start = 0, end;
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+
     const range = req.headers.range && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
-    if (range && v.kind !== 'image') {
-      // сначала узнаём полный размер файла маленьким range-запросом
+    if (range) {
+      // узнаём полный размер файла маленьким range-запросом
       const probe = await fetchFile(signed.signedUrl, 'bytes=0-1');
       const cr = probe.resp.headers.get('content-range'); // e.g. "bytes 0-1/12345"
       const total = cr ? Number(cr.split('/')[1]) : NaN;
       if (Number.isFinite(total)) {
-        start = Number(range[1] || 0);
-        end = range[2] ? Math.min(Number(range[2]), total - 1) : total - 1;
+        const start = Number(range[1] || 0);
+        const end = range[2] ? Math.min(Number(range[2]), total - 1) : total - 1;
         if (start > end || start >= total) {
           res.setHeader('Content-Range', `bytes */${total}`);
           return res.status(416).end();
         }
-        const got = await fetchFile(signed.signedUrl, `bytes=${start}-${end}`);
-        buf = got.buf; status = 206;
         res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Content-Length', buf.length);
-      } else {
-        buf = probe.buf; // fall through: serve whole file
+        res.setHeader('Content-Length', end - start + 1);
+        return streamFile(res, signed.signedUrl, { Range: `bytes=${start}-${end}` }, 206);
       }
     }
-    if (!buf) ({ buf } = await fetchFile(signed.signedUrl));
-    res.setHeader('Content-Type', mime);
-    res.setHeader('Content-Length', buf.length);
-    if (status === 200) res.setHeader('Accept-Ranges', 'bytes');
-    res.status(status).send(buf);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка отдачи файла' }); }
+    // без Range — стримим весь файл частями (не держим его целиком в памяти)
+    const head = await fetchFile(signed.signedUrl, 'bytes=0-0');
+    const cr = head.resp.headers.get('content-range');
+    const total = cr ? Number(cr.split('/')[1]) : NaN;
+    if (Number.isFinite(total)) res.setHeader('Content-Length', total);
+    return streamFile(res, signed.signedUrl, {}, 200);
+  } catch (e) {
+    console.error(e);
+    if (!res.headersSent) res.status(500).json({ error: 'Ошибка отдачи файла' });
+    else res.destroy();
+  }
 });
 
 // ---------- VOTING ----------
@@ -174,6 +212,19 @@ app.patch('/api/admin/videos/:id', async (req, res) => {
     if (!await adminFrom(req)) return res.status(401).json({ error: 'Нет доступа' });
     const title = cleanName(req.body.title) || 'Без названия';
     await db.from('videos').update({ title }).eq('id', req.params.id);
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
+});
+
+// удаление конкретного голоса (зритель + номинация) — запись удаляется из БД,
+// после этого человек может проголосовать в этой номинации заново
+app.delete('/api/admin/votes/:voterId/:category', async (req, res) => {
+  try {
+    if (!await adminFrom(req)) return res.status(401).json({ error: 'Нет доступа' });
+    const { voterId, category } = req.params;
+    if (!/^\d{2}$/.test(category)) return res.status(400).json({ error: 'Некорректная номинация' });
+    const { error } = await db.from('votes').delete().eq('voter_id', voterId).eq('category', category);
+    if (error) throw error;
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
 });
@@ -236,6 +287,43 @@ app.put('/api/admin/upload', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
 });
 
+// фото номинанта для страницы «УЧАСТНИКИ»: PUT /api/admin/participant-photo?index=N
+const PARTICIPANT_COUNT = 8;
+app.put('/api/admin/participant-photo', async (req, res) => {
+  try {
+    if (!await adminFrom(req)) return res.status(401).json({ error: 'Нет доступа' });
+    const index = Number(req.query.index);
+    if (!Number.isInteger(index) || index < 0 || index >= PARTICIPANT_COUNT) return res.status(400).json({ error: 'Некорректный номинант' });
+    const name = cleanName(req.query.name) || `participant-${index + 1}`;
+    const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
+    if (!IMAGE_EXT.includes(ext)) return res.status(400).json({ error: `Можно загружать только картинки (${IMAGE_EXT.join(', ')})` });
+    const chunks = [];
+    let total = 0;
+    req.on('data', c => {
+      total += c.length;
+      if (total > MAX_IMAGE) {
+        res.status(413).json({ error: 'Файл слишком большой (максимум 15 МБ)' });
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', async () => {
+      try {
+        const buf = Buffer.concat(chunks);
+        if (!buf.length) return res.status(400).json({ error: 'Пустой файл' });
+        const id = uid();
+        const filePath = `participants/${id}.${ext}`;
+        const { error: upErr } = await db.storage.from('videos')
+          .upload(filePath, buf, { contentType: MIME[ext] || 'application/octet-stream', upsert: false });
+        if (upErr) throw upErr;
+        await db.from('videos').insert({ id, category: 'PP', kind: 'image', title: name.replace(/\.[a-z0-9]+$/i, ''), path: filePath, size: buf.length });
+        res.json({ ok: true, id, url: `/api/video/${id}` });
+      } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка загрузки' }); }
+    });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
+});
+
 app.get('/api/admin/overview', async (req, res) => {
   try {
     if (!await adminFrom(req)) return res.status(401).json({ error: 'Нет доступа' });
@@ -249,6 +337,7 @@ app.get('/api/admin/overview', async (req, res) => {
       voters: (voters || []).map(v => ({
         name: v.name,
         choices: (votes || []).filter(t => t.voter_id === v.id).map(t => ({
+          voterId: v.id,
           category: t.category,
           title: videos?.find(x => x.id === t.video_id)?.title || '?'
         }))
