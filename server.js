@@ -140,28 +140,35 @@ async function fetchFile(url, rangeHeader) {
 // Экономит RAM на маленьком Render-сервисе и отдаёт видео быстрее.
 // Важно: 'error' на res убираем сразу после drain — иначе при десятках параллельных
 // стримов браузер копит error-слушателей и Node пишет MaxListenersExceededWarning.
-async function streamFile(res, signedUrl, headers, status) {
+async function streamFile(req, res, signedUrl, headers, status) {
   const r = await fetch(signedUrl, { headers });
   if (!r.ok && r.status !== 206) throw new Error(`Supabase Storage ответил ${r.status}`);
   res.status(status);
   const reader = r.body.getReader();
   // если зритель закрыл вкладку/перемотал — обрываем стрим без падения процесса
-  reqAbortOnClose?.(req, reader);
+  let aborted = false;
+  const abortStream = () => { aborted = true; try { reader.cancel().catch(() => {}); } catch {} };
+  req.on('close', abortStream);
+  res.on('close', abortStream);
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done || aborted) break;
       if (!res.write(value)) {
         await new Promise((resolve, reject) => {
           const onError = (err) => reject(err);
-          res.once('drain', () => { res.removeListener('error', onError); resolve(); });
+          const onDrain = () => { res.removeListener('error', onError); resolve(); };
+          res.once('drain', onDrain);
           res.once('error', onError);
-        }).catch(() => { try { reader.cancel(); } catch {} return; });
+        }).catch(() => { try { reader.cancel().catch(() => {}); } catch {} return; });
+        if (aborted) break;
       }
     }
   } finally {
+    req.removeListener('close', abortStream);
+    res.removeListener('close', abortStream);
     try { reader.releaseLock(); } catch {}
-    res.end();
+    if (!res.writableEnded) res.end();
   }
 }
 
@@ -193,7 +200,7 @@ app.get('/api/video/:id', async (req, res) => {
         }
         res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
         res.setHeader('Content-Length', end - start + 1);
-        return streamFile(res, signed.signedUrl, { Range: `bytes=${start}-${end}` }, 206);
+        return streamFile(req, res, signed.signedUrl, { Range: `bytes=${start}-${end}` }, 206);
       }
     }
     // без Range — стримим весь файл частями (не держим его целиком в памяти)
@@ -201,7 +208,7 @@ app.get('/api/video/:id', async (req, res) => {
     const cr = head.resp.headers.get('content-range');
     const total = cr ? Number(cr.split('/')[1]) : NaN;
     if (Number.isFinite(total)) res.setHeader('Content-Length', total);
-    return streamFile(res, signed.signedUrl, {}, 200);
+    return streamFile(req, res, signed.signedUrl, {}, 200);
   } catch (e) {
     console.error(e);
     if (!res.headersSent) res.status(500).json({ error: 'Ошибка отдачи файла' });
