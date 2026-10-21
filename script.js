@@ -60,6 +60,8 @@
     }
   }
   const fmtSize = (b) => b > 1e9 ? (b / 1e9).toFixed(2) + ' ГБ' : (b / 1e6).toFixed(1) + ' МБ';
+  const VIDEO_CAT = '08'; // «Откат года» — ролики; остальные номинации — картинки номинантов
+  const isVideoCat = (n) => n === VIDEO_CAT;
 
   const esc = (value) => String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 
@@ -185,7 +187,7 @@
       m.innerHTML = `<div class="modalBox" role="dialog" aria-modal="true">
         <div class="modalIcon">!</div>
         <h3>Выбор нельзя будет изменить</h3>
-        <p>Вы голосуете за ролик <b>«${esc(video.title)}»</b> в номинации <b>«${esc(selected.title)}»</b>. После подтверждения изменить или отозвать голос не получится.</p>
+        <p>Вы голосуете за <b>«${esc(video.title)}»</b> в номинации <b>«${esc(selected.title)}»</b>. После подтверждения изменить или отозвать голос не получится.</p>
         <div class="modalActions"><button class="ghostBtn" data-r="0">ОТМЕНА</button><button class="luxButton" data-r="1"><span>ДА, ГОЛОСУЮ</span><b>✓</b></button></div>
       </div>`;
       const close = (r) => { m.remove(); document.removeEventListener('keydown', onKey); resolve(r); };
@@ -197,7 +199,7 @@
     });
   }
 
-  async function renderCategoryDetail() {
+  function renderCategoryDetail() {
     shell(`
       <section class="categoryDetail sceneIn">
         <div class="detailHead">
@@ -205,20 +207,25 @@
           <div class="voteStatus" id="voteStatus">ЗАГРУЗКА…</div>
         </div>
         <div class="voteWarn" id="voteWarn"></div>
-        <div class="videoGrid" id="videoGrid"></div>
+        <div class="${isVideoCat(selected.n) ? 'videoGrid' : 'imageGrid'}" id="videoGrid"></div>
       </section>`, 'ГОЛОСОВАНИЕ');
-    try { await loadVideos(); } catch { return; }
+    loadVideos().then(paintCards).catch(() => {});
+  }
+
+  function paintCards() {
     const grid = document.getElementById('videoGrid');
+    if (!grid) return;
     const status = document.getElementById('voteStatus');
     const warn = document.getElementById('voteWarn');
+    const videoMode = isVideoCat(selected.n);
     const list = videosByCat[selected.n] || [];
 
     const paint = () => {
       const chosenId = myVotes[selected.n];
       if (!list.length) {
-        status.textContent = 'РОЛИКОВ ПОКА НЕТ';
+        status.textContent = 'НОМИНАНТОВ ПОКА НЕТ';
         warn.style.display = 'none';
-        grid.innerHTML = '<div class="emptyState">В этой номинации ещё нет роликов. Загляните позже.</div>';
+        grid.innerHTML = `<div class="emptyState">В этой номинации ещё нет ${videoMode ? 'роликов' : 'номинантов'}. Загляните позже.</div>`;
         return;
       }
       warn.style.display = '';
@@ -227,17 +234,19 @@
         warn.className = 'voteWarn locked';
         warn.textContent = 'Вы уже проголосовали в этой номинации. Выбор окончательный.';
       } else {
-        status.textContent = 'ВЫБЕРИТЕ ОДИН РОЛИК';
+        status.textContent = videoMode ? 'ВЫБЕРИТЕ ОДИН РОЛИК' : 'ВЫБЕРИТЕ НОМИНАНТА';
         warn.className = 'voteWarn';
-        warn.innerHTML = '<b>Внимание:</b> голосовать можно только один раз. После подтверждения изменить выбор нельзя.';
+        warn.innerHTML = `<b>Внимание:</b> голосовать можно только один раз. После подтверждения изменить выбор нельзя.`;
       }
       grid.innerHTML = list.map((v, i) => {
         const mine = chosenId === v.id;
         const label = mine ? 'ВАШ ВЫБОР ✓' : chosenId ? 'ГОЛОС УЖЕ ОТДАН' : 'ОТДАТЬ ГОЛОС';
-        return `<article class="videoCard ${mine ? 'mine' : ''}">
-          <div class="videoWrap"><video controls preload="metadata" src="${esc(v.url)}"></video><span class="videoNum">0${i + 1}</span></div>
-          <div class="videoMeta"><div><small>ВИДЕО №0${i + 1}</small><strong>${esc(v.title)}</strong></div><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>
-        </article>`;
+        const media = videoMode
+          ? `<div class="videoWrap"><video controls preload="metadata" playsinline src="${esc(v.url)}"></video><span class="videoNum">0${i + 1}</span></div>
+             <div class="videoMeta"><div><small>ВИДЕО №0${i + 1}</small><strong>${esc(v.title)}</strong></div><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`
+          : `<div class="imageWrap"><img src="${esc(v.url)}" alt="${esc(v.title)}" loading="lazy"><span class="videoNum">0${i + 1}</span></div>
+             <div class="imageCaption"><b>${esc(v.title)}</b><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`;
+        return `<article class="videoCard ${mine ? 'mine' : ''}">${media}</article>`;
       }).join('');
       grid.querySelectorAll('.voteBtn:not([disabled])').forEach(btn => btn.onclick = async () => {
         const video = list.find(v => v.id === btn.dataset.vote);
@@ -322,6 +331,7 @@
 
     function drawVideos() {
       const list = overview.videos.filter(v => v.category === cat);
+      const videoMode = isVideoCat(cat);
       body.innerHTML = `
         <div class="adminCols">
           <nav class="adminCats">${categories.map(c => {
@@ -332,17 +342,21 @@
             <h2>${esc(categories.find(c => c.n === cat).title)}</h2>
             <div class="dropzone" id="dropzone" tabindex="0">
               <div class="dropIcon">⇪</div>
-              <b>Перетащите видео сюда</b>
-              <small>или нажмите, чтобы выбрать файлы · MP4, WebM, MOV, M4V, OGV · можно несколько сразу</small>
-              <input type="file" id="fileInput" accept="video/*,.mp4,.webm,.mov,.m4v,.ogv" multiple hidden>
+              <b>${videoMode ? 'Перетащите видео сюда' : 'Перетащите картинки сюда'}</b>
+              <small>${videoMode
+                ? 'можно выбрать несколько роликов сразу · MP4, WebM, MOV, M4V, OGV · до 200 МБ'
+                : 'имя файла станет подписью номинанта · JPG, PNG, GIF, WEBP · до 15 МБ · можно несколько сразу'}</small>
+              <input type="file" id="fileInput" accept="${videoMode ? 'video/*,.mp4,.webm,.mov,.m4v,.ogv' : 'image/*,.jpg,.jpeg,.png,.gif,.webp'}" multiple hidden>
             </div>
             <div class="uploadQueue" id="uploadQueue"></div>
             <div class="adminVideos">${list.length ? list.map(v => `
               <div class="adminVideo" data-id="${esc(v.id)}">
-                <video src="${esc(v.url)}" preload="metadata" controls></video>
+                ${videoMode
+                  ? `<video src="${esc(v.url)}" preload="metadata" controls playsinline></video>`
+                  : `<img src="${esc(v.url)}" alt="" loading="lazy">`}
                 <div class="avInfo"><strong>${esc(v.title)}</strong><small>${fmtSize(v.size)} · голосов: ${v.voters.length}</small></div>
                 <div class="avActions"><button data-act="rename">ПЕРЕИМЕНОВАТЬ</button><button data-act="del" class="danger">УДАЛИТЬ</button></div>
-              </div>`).join('') : '<div class="emptyState">В этой номинации пока нет роликов.</div>'}</div>
+              </div>`).join('') : `<div class="emptyState">В этой номинации пока нет ${videoMode ? 'роликов' : 'номинантов'}.</div>`}</div>
           </div>
         </div>`;
       body.querySelector('.adminCats').onclick = (e) => {
@@ -387,9 +401,12 @@
 
     let uploading = false;
     function addFiles(files) {
-      const ok = files.filter(f => /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name));
+      const videoMode = isVideoCat(cat);
+      const ok = files.filter(f => videoMode
+        ? /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name)
+        : /\.(jpe?g|png|gif|webp)$/i.test(f.name));
       const bad = files.filter(f => !ok.includes(f));
-      bad.forEach(f => queue.push({ cat, name: f.name, pct: 0, state: 'error', error: 'формат не поддерживается' }));
+      bad.forEach(f => queue.push({ cat, name: f.name, pct: 0, state: 'error', error: videoMode ? 'только видео (MP4, WebM, MOV)' : 'только картинки (JPG, PNG, GIF, WEBP)' }));
       ok.forEach(f => queue.push({ cat, file: f, name: f.name, pct: 0, state: 'wait' }));
       drawQueue();
       runQueue();
@@ -423,14 +440,14 @@
     function drawResults() {
       const total = overview.voters.reduce((n, v) => n + v.choices.length, 0);
       body.innerHTML = `
-        <div class="statRow"><div><b>${overview.voters.length}</b><small>ЗРИТЕЛЕЙ</small></div><div><b>${total}</b><small>ГОЛОСОВ ВСЕГО</small></div><div><b>${overview.videos.length}</b><small>РОЛИКОВ</small></div></div>
+        <div class="statRow"><div><b>${overview.voters.length}</b><small>ЗРИТЕЛЕЙ</small></div><div><b>${total}</b><small>ГОЛОСОВ ВСЕГО</small></div><div><b>${overview.videos.length}</b><small>НОМИНАНТОВ</small></div></div>
         <h2 class="subH">ПО НОМИНАЦИЯМ</h2>
         <div class="resultList">${categories.map(c => {
           const vids = overview.videos.filter(v => v.category === c.n).sort((a, b) => b.voters.length - a.voters.length);
           const sum = vids.reduce((n, v) => n + v.voters.length, 0);
           return `<div class="resultCat"><div class="rcHead"><span>${c.n}</span><strong>${esc(c.title)}</strong><em>голосов: ${sum}</em></div>${vids.length ? vids.map(v => `
             <div class="rcVideo"><div class="rcTop"><b>${esc(v.title)}</b><i>${v.voters.length}</i></div><div class="bar"><i style="width:${sum ? Math.round(v.voters.length / sum * 100) : 0}%"></i></div>
-            <div class="chips">${v.voters.length ? v.voters.map(n => `<span>${esc(n)}</span>`).join('') : '<small>пока никто не выбрал</small>'}</div></div>`).join('') : '<div class="emptyState sm">Нет роликов</div>'}</div>`;
+            <div class="chips">${v.voters.length ? v.voters.map(n => `<span>${esc(n)}</span>`).join('') : '<small>пока никто не выбрал</small>'}</div></div>`).join('') : '<div class="emptyState sm">Нет номинантов</div>'}</div>`;
         }).join('')}</div>
         <h2 class="subH">КТО ЧТО ВЫБРАЛ</h2>
         <div class="voterTable">${overview.voters.length ? overview.voters.map(v => `
