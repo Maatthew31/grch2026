@@ -1,2 +1,2 @@
-*.bak
-*.bundle
+node_modules/
+.env
