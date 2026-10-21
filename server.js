@@ -1,6 +1,12 @@
 // ГРЕЧКА 2026 — сервер: статика + API поверх Supabase (бесплатная онлайн-БД)
 // Запуск: node server.js  (или `npm start` на Render/жёлтой обёртке)
 require('dotenv').config();
+
+// Страховка: ни одна необработанная сетевая ошибка (ECONNRESET у стримов/загрузок)
+// не должна ронять весь процесс сервера. Логируем и живём дальше.
+process.on('uncaughtException', (e) => console.error('uncaught:', e.message || e));
+process.on('unhandledRejection', (e) => console.error('unrejection:', (e && e.message) || e));
+
 const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
@@ -91,7 +97,9 @@ app.post('/api/admin/login', async (req, res) => {
 });
 
 // ---------- PUBLIC DATA ----------
-const VIDEO_CAT = '08'; // «Откат года» — единственная видео-номинация, остальные — картинки
+// Видео-номинации: 08 «Откат года», 10 «Кружок года». Остальные — картинки номинантов.
+const VIDEO_CATS = ['08', '10'];
+const isVideoCat = (n) => VIDEO_CATS.includes(n);
 
 app.get('/api/videos', async (req, res) => {
   try {
@@ -269,49 +277,78 @@ app.delete('/api/admin/videos/:id', async (req, res) => {
 });
 
 // загрузка файла: PUT /api/admin/upload?category=01&name=file.png  (тело = сырые байты)
-// Номинация '08' (Откат года) принимает только видео, остальные — только картинки.
-const VIDEO_EXT = ['mp4', 'webm', 'mov', 'm4v', 'ogv'];
+// Видео-номинации VIDEO_CATS принимают только видео, остальные — только картинки.
 const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
 const MAX_VIDEO = 200 * 1024 * 1024, MAX_IMAGE = 15 * 1024 * 1024;
 
+// определяет реальный тип файла по сигнатуре (magic bytes) — надёжнее, чем по расширению имени
+function sniffType(buf) {
+  if (buf.length < 12) return null;
+  const s = (o, n) => buf.subarray(o, o + n).toString('latin1');
+  if (s(4, 4) === 'ftyp') return { kind: 'video', ext: 'mp4', mime: 'video/mp4' };            // MP4/MOV/M4V
+  if (s(0, 4) === '\x1a\x45\xdf\xa3') return { kind: 'video', ext: 'webm', mime: 'video/webm' }; // WebM
+  if (s(0, 4) === 'OggS') return { kind: 'video', ext: 'ogv', mime: 'video/ogg' };
+  if (buf[0] === 0xFF && buf[1] === 0xD8) return { kind: 'image', ext: 'jpg', mime: 'image/jpeg' };
+  if (s(0, 8) === '\x89PNG\r\n\x1a\n') return { kind: 'image', ext: 'png', mime: 'image/png' };
+  if (s(0, 6).startsWith('GIF8')) return { kind: 'image', ext: 'gif', mime: 'image/gif' };
+  if (s(0, 4) === 'RIFF' && s(8, 4) === 'WEBP') return { kind: 'image', ext: 'webp', mime: 'image/webp' };
+  if (buf[0] === 0x42 && buf[1] === 0x4D) return { kind: 'image', ext: 'bmp', mime: 'image/bmp' };
+  return null;
+}
+
 app.put('/api/admin/upload', async (req, res) => {
+  let responded = false;
+  const fail = (code, msg) => {
+    if (responded) return;
+    responded = true;
+    if (!res.headersSent) res.status(code).json({ error: msg }); else res.end();
+  };
   try {
-    if (!await adminFrom(req)) return res.status(401).json({ error: 'Нет доступа' });
+    if (!await adminFrom(req)) return fail(401, 'Нет доступа');
     const category = String(req.query.category || '');
-    const name = cleanName(req.query.name) || 'file';
-    if (!/^\d{2}$/.test(category)) return res.status(400).json({ error: 'Некорректная номинация' });
-    const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
-    const isVideoCat = category === VIDEO_CAT;
-    const kind = isVideoCat ? 'video' : 'image';
-    if (isVideoCat && !VIDEO_EXT.includes(ext)) return res.status(400).json({ error: `В «Откат года» можно загружать только видео (${VIDEO_EXT.join(', ')})` });
-    if (!isVideoCat && !IMAGE_EXT.includes(ext)) return res.status(400).json({ error: `В эту номинацию можно загружать только картинки (${IMAGE_EXT.join(', ')})` });
+    const rawName = String(req.query.name || 'file');
+    if (!/^\d{2}$/.test(category)) return fail(400, 'Некорректная номинация');
+    const videoCat = VIDEO_CATS.includes(category);
+    const limit = videoCat ? MAX_VIDEO : MAX_IMAGE;
     const chunks = [];
-    let total = 0;
-    const limit = isVideoCat ? MAX_VIDEO : MAX_IMAGE;
+    let total = 0, aborted = false;
     req.on('data', c => {
+      if (aborted) return;
       total += c.length;
       if (total > limit) {
-        res.status(413).json({ error: `Файл слишком большой (максимум ${isVideoCat ? '200 МБ для видео' : '15 МБ для картинок'})` });
-        req.destroy();
+        aborted = true;
+        fail(413, `Файл слишком большой (максимум ${videoCat ? '200 МБ для видео' : '15 МБ для картинок'})`);
+        req.resume(); // дочитываем и выбрасываем тело, чтобы соединение не рвалось
         return;
       }
       chunks.push(c);
     });
+    req.on('error', () => { aborted = true; fail(400, 'Соединение оборвано при передаче'); });
+    req.on('aborted', () => { aborted = true; req.resume(); });
+    res.on('close', () => { if (!res.writableEnded) { aborted = true; req.resume(); } });
     req.on('end', async () => {
+      if (aborted) return;
       try {
         const buf = Buffer.concat(chunks);
-        if (!buf.length) return res.status(400).json({ error: 'Пустой файл' });
+        if (!buf.length) return fail(400, 'Пустой файл');
+        const sniffed = sniffType(buf);
+        if (!sniffed) return fail(400, 'Не удалось распознать файл. Поддерживаются JPG, PNG, GIF, WEBP, BMP и MP4, MOV, WEBM, M4V, OGV');
+        if (sniffed.kind !== (videoCat ? 'video' : 'image')) {
+          return fail(400, videoCat
+            ? 'Этот файл — картинка, а в видео-номинации («Откат года», «Кружок года») можно загружать только видео'
+            : 'Этот файл — видео, а в этой номинации можно загружать только картинки');
+        }
         const id = uid();
-        const filePath = `${category}/${id}.${ext}`;
-        const mime = MIME[ext] || 'application/octet-stream';
+        const filePath = `${category}/${id}.${sniffed.ext}`; // расширение из реального содержимого, а не из имени
         const { error: upErr } = await db.storage.from('videos')
-          .upload(filePath, buf, { contentType: mime, upsert: false });
+          .upload(filePath, buf, { contentType: sniffed.mime, upsert: false });
         if (upErr) throw upErr;
-        await db.from('videos').insert({ id, category, kind, title: name.replace(/\.[a-z0-9]+$/i, ''), path: filePath, size: buf.length });
+        await db.from('videos').insert({ id, category, kind: sniffed.kind, title: rawName.replace(/\.[a-z0-9]+$/i, '').slice(0, 60), path: filePath, size: buf.length });
+        responded = true;
         res.json({ ok: true, id });
-      } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка загрузки' }); }
+      } catch (e) { console.error('upload:', e.message || e); fail(500, 'Supabase отклонил загрузку (' + (e.message || 'сеть') + '). Попробуйте ещё раз.'); }
     });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
+  } catch (e) { console.error(e); fail(500, 'Ошибка сервера'); }
 });
 
 // фото номинанта для страницы «УЧАСТНИКИ»: PUT /api/admin/participant-photo?index=N
