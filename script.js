@@ -88,32 +88,45 @@
     });
   }
 
-  // Плавный переход: старая сцена уплывает, новая выезжает следом (без blur-дерганий)
+  // Плавный переход: старая сцена уплывает, новая въезжает СРАЗУ поверх неё
+  // (position:absolute на время анимации) — без пауз и «лагающих» рывков.
   let animating = false;
   const EASE = 'cubic-bezier(.33,1,.68,1)';
   function animateOut(el, dir) {
+    el.style.willChange = 'transform, opacity';
     return el.animate(
       [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${dir === 'back' ? 34 : -34}px)` }],
       { duration: 170, easing: EASE, fill: 'forwards' }
-    ).finished.catch(() => {});
+    ).finished.then(() => { el.remove(); }).catch(() => { el.remove(); });
   }
   function animateIn(el, dir) {
+    el.classList.remove('sceneIn'); // анимируем только через WAAPI, без двойных эффектов
+    el.style.willChange = 'transform, opacity';
     return el.animate(
       [{ opacity: 0, transform: `translateX(${dir === 'back' ? -34 : 34}px)` }, { opacity: 1, transform: 'none' }],
-      { duration: 320, easing: EASE, fill: 'backwards' }
-    ).finished.catch(() => {});
+      { duration: 320, delay: 90, easing: EASE, fill: 'both' }
+    ).finished.then(() => { el.style.willChange = ''; }).catch(() => {});
   }
   async function navigate(next, dir = 'forward') {
     if (animating || next === scene) return;
     animating = true;
     const oldEl = app.querySelector('section');
-    if (oldEl) await animateOut(oldEl, dir);
     direction = dir;
     scene = next;
     window.scrollTo(0, 0);
     render();
     const newEl = app.querySelector('section');
-    if (newEl) await animateIn(newEl, dir);
+    if (oldEl && newEl && oldEl !== newEl) {
+      // Старая сцена остаётся видимой поверх новой только на время анимации
+      const r = newEl.getBoundingClientRect();
+      oldEl.style.position = 'absolute';
+      oldEl.style.top = r.top + window.scrollY + 'px';
+      oldEl.style.left = 0; oldEl.style.right = 0;
+      oldEl.style.zIndex = 5;
+      await Promise.all([animateOut(oldEl, dir), animateIn(newEl, dir)]);
+    } else if (newEl) {
+      await animateIn(newEl, dir);
+    }
     animating = false;
   }
 
