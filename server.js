@@ -93,6 +93,7 @@ app.post('/api/admin/login', async (req, res) => {
 // ---------- PUBLIC DATA ----------
 const VIDEO_CATS = ['08', '10']; // «Откат года» и «Кружок года» — видео; остальные номинации — картинки
 const isVideoCatN = (n) => VIDEO_CATS.includes(n);
+const COVER_CAT = 'CV'; // служебная «номинация»: обложки номинаций (16:9), рисуются фоном в списке категорий
 
 app.get('/api/videos', async (req, res) => {
   try {
@@ -104,6 +105,10 @@ app.get('/api/videos', async (req, res) => {
     ]);
     const byCat = {};
     for (const v of videos) (byCat[v.category] ||= []).push({ id: v.id, title: v.title, size: v.size, kind: v.kind, url: `/api/video/${v.id}` });
+    // обложки не должны считаться «номинантами» в голосовании — выносим их отдельно
+    const covers = {};
+    for (const c of byCat[COVER_CAT] || []) covers[c.title] = c.url;
+    delete byCat[COVER_CAT];
     // сортировка по названию важна для фото номинантов («ИМЯ 4» → индекс 4),
     // иначе порядок в списке «PP» зависит от порядка строк в БД и лица перепутаются.
     // Числа сравниваем как числа: «ИМЯ 10» должен идти после «ИМЯ 9», а не после «ИМЯ 1».
@@ -118,7 +123,7 @@ app.get('/api/videos', async (req, res) => {
       const vid = videos.find(v => v.id === vt.video_id);
       if (vid) myVotes[vid.category] = vid.id;
     }
-    res.json({ videos: byCat, myVotes });
+    res.json({ videos: byCat, myVotes, covers });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
 });
 
@@ -370,6 +375,66 @@ app.put('/api/admin/participant-photo', async (req, res) => {
         res.json({ ok: true, id, url: `/api/video/${id}` });
       } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка загрузки' }); }
     });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
+});
+
+// обложка номинации (16:9): PUT /api/admin/cover?category=01&name=cover.jpg
+// Хранится как запись с category='CV' и title='01' — список «CV» отдаётся в /api/videos,
+// клиент сопоставляет обложку с номинацией по номеру в названии.
+const MAX_COVER = 8 * 1024 * 1024;
+app.put('/api/admin/cover', async (req, res) => {
+  try {
+    if (!await adminFrom(req)) return res.status(401).json({ error: 'Нет доступа' });
+    const category = String(req.query.category || '');
+    if (!/^\d{2}$/.test(category)) return res.status(400).json({ error: 'Некорректная номинация' });
+    const chunks = [];
+    let total = 0, tooBigC = false;
+    req.on('data', c => {
+      if (tooBigC) return;
+      total += c.length;
+      if (total > MAX_COVER) {
+        tooBigC = true;
+        res.status(413).json({ error: 'Обложка слишком большая (максимум 8 МБ)' });
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', async () => {
+      try {
+        if (tooBigC) return;
+        const buf = Buffer.concat(chunks);
+        if (!buf.length) return res.status(400).json({ error: 'Пустой файл' });
+        const real = sniffType(buf);
+        if (!real.image) return res.status(400).json({ error: 'Обложкой может быть только картинка (JPG, PNG, WEBP)' });
+        const id = uid();
+        const filePath = `covers/${category}/${id}.${real.ext}`; // папка на одного автора — перезапись не конфликтует
+        const { error: upErr } = await db.storage.from('videos')
+          .upload(filePath, buf, { contentType: real.mime, upsert: false });
+        if (upErr) throw upErr;
+        // старая обложка этой номинации удаляется вместе с файлом из Storage
+        const { data: old } = await db.from('videos').select('id,path').eq('category', COVER_CAT).eq('title', category);
+        for (const o of old || []) {
+          await db.storage.from('videos').remove([o.path]);
+          await db.from('videos').delete().eq('id', o.id);
+        }
+        await db.from('videos').insert({ id, category: COVER_CAT, kind: 'image', title: category, path: filePath, size: buf.length });
+        res.json({ ok: true, id, url: `/api/video/${id}` });
+      } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка загрузки' }); }
+    });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
+});
+
+app.delete('/api/admin/cover/:category', async (req, res) => {
+  try {
+    if (!await adminFrom(req)) return res.status(401).json({ error: 'Нет доступа' });
+    const category = req.params.category;
+    if (!/^\d{2}$/.test(category)) return res.status(400).json({ error: 'Некорректная номинация' });
+    const { data: old } = await db.from('videos').select('id,path').eq('category', COVER_CAT).eq('title', category);
+    for (const o of old || []) {
+      await db.storage.from('videos').remove([o.path]);
+      await db.from('videos').delete().eq('id', o.id);
+    }
+    res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
 });
 
