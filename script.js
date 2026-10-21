@@ -1,18 +1,25 @@
 (() => {
-  const participants = [
+  // Участники. Фото номинантов можно загружать прямо из админки (вкладка ФОТО).
+  let participants = [
     { name: 'КУРМАН', role: 'Номинант', img: 'assets/person-1.svg' },
     { name: 'ЛЕХА', role: 'Номинант', img: 'assets/person-2.svg' },
     { name: 'ВОВА', role: 'Номинант', img: 'assets/person-3.svg' },
-    { name: 'КАЗАНЦЕВ', role: 'Номинант', img: 'assets/person-4.svg' },
-    { name: 'ИГОРЬ', role: 'Номинант', img: 'assets/person-5.svg' },
+    { name: 'ИГОРЬ', role: 'Номинант', img: 'assets/person-4.svg' },
+    { name: 'РИЗЕН', role: 'Номинант', img: 'assets/person-5.svg' },
     { name: 'ГЭС', role: 'Номинант', img: 'assets/person-6.svg' },
-    { name: 'АНТОН', role: 'Номинант', img: 'assets/person-7.svg' }
+    { name: 'АНТОН', role: 'Номинант', img: 'assets/person-7.svg' },
+    { name: 'МАКСОН', role: 'Номинант', img: 'assets/person-8.svg' }
   ];
+  try {
+    const saved = JSON.parse(localStorage.getItem('grechka_participants'));
+    if (Array.isArray(saved) && saved.length === participants.length) {
+      saved.forEach((p, i) => { if (p && p.img) participants[i] = { ...participants[i], ...p }; });
+    }
+  } catch { /* ignore */ }
 
   const categories = [
     ['01','Король грч все','Главный титул вечера. Без объяснений. Просто король.'],
     ['02','Человек мем года','Человек, который стал мемом раньше, чем успел это осознать.'],
-    ['03','Разъебать года','За абсолютное уничтожение ожиданий, здравого смысла или всего сразу.'],
     ['04','Провал года','Когда всё шло по плану. К сожалению, план был ужасным.'],
     ['05','Киберкотлет года','Реакция быстрее, чем загрузка меню. Навык вне человеческих норм.'],
     ['06','Дед инсайд года','Самый глубокий уровень погружения в собственные мысли.'],
@@ -25,20 +32,22 @@
     ['13','Король пунктуальности','Человек, который приходит вовремя. Иногда даже раньше.'],
     ['14','Игра года','Главная игра года по версии комиссии, которой никто не видел.']
   ].map(([n,title,desc]) => ({n,title,desc}));
+  const CAT_COUNT = categories.length; // 13 номинаций (номинация «03» удалена)
 
   const app = document.getElementById('app');
   // Восстановление сцены после перезагрузки страницы: адрес вида #scene/номер_номинации
   const SCENES = ['intro', 'login', 'participants', 'categories', 'categoryDetail'];
   const parseHash = () => {
-    const [h, s, n] = location.hash.split('/');
-    if (h !== '#admin' || !s) return {};
-    return { scene: SCENES.includes(s) ? s : null, cat: /^\d{2}$/.test(n || '') ? n : null };
+    if (location.hash === '#admin') return { admin: true };
+    const [h, n] = location.hash.replace(/^#\/?/, '').split('/');
+    if (!SCENES.includes(h)) return {};
+    return { scene: h, cat: /^\d{2}$/.test(n || '') ? n : null };
   };
   const restored = parseHash();
-  let scene = restored.scene || 'intro';
+  let scene = restored.admin ? 'admin' : (restored.scene || 'intro');
   let selected = categories.find(c => c.n === restored.cat) || categories[0];
   let direction = 'forward';
-  const sceneHash = (s) => '#admin/' + s + (s === 'categoryDetail' ? '/' + selected.n : '');
+  const sceneHash = (s) => s === 'admin' ? '#admin' : s === 'intro' ? '#/' : '#' + s + (s === 'categoryDetail' ? '/' + selected.n : '');
 
   const store = {
     get voter() { try { return JSON.parse(localStorage.getItem('grechka_voter')); } catch { return null; } },
@@ -59,6 +68,20 @@
     if (!r.ok) { const e = new Error(data.error || 'Ошибка запроса'); e.status = r.status; e.data = data; throw e; }
     return data;
   }
+  // Восстанавливаем загруженные из админки фото номинантов (видны всем посетителям)
+  api('/api/videos', {}).then(d => {
+    const pp = (d.videos && d.videos.PP) || [];
+    if (!pp.length) return;
+    let changed = false;
+    for (const item of pp) {
+      const m = item.title.match(/(\d+)\s*$/); // имя вида «ИМЯ 4» — индекс номинанта в конце
+      if (!m) continue;
+      const i = Number(m[1]) - 1;
+      if (i >= 0 && i < participants.length && participants[i].img !== item.url) { participants[i].img = item.url; changed = true; }
+    }
+    if (changed && scene === 'participants') render();
+  }).catch(() => {});
+
   async function loadVideos() {
     try {
       const d = await api('/api/videos');
@@ -82,20 +105,40 @@
         ${content}
       </main>`;
     document.getElementById('back')?.addEventListener('click', () => {
-      const prev = { login:'intro', participants:'intro', categories:'participants', categoryDetail:'categories', admin:'intro' }[scene] || 'intro';
-      if (scene === 'admin') history.replaceState(null, '', location.pathname);
-      navigate(prev, 'back');
+      // кнопка «назад» делает ровно то же, что браузерная кнопка: шаг по истории сайта
+      if (history.state) history.back();
+      else navigate('intro', 'back');
     });
   }
 
-  // Плавный переход: старая сцена уплывает, новая въезжает СРАЗУ поверх неё
-  // (position:absolute на время анимации) — без пауз и «лагающих» рывков.
+  // ---------- НАВИГАЦИЯ ИСТОРИЕЙ ----------
+  // Каждая сцена — запись в истории браузера (pushState). Поэтому:
+  //  • браузерная кнопка «назад» возвращает на ПРЕДЫДУЩУЮ страницу сайта, а не на главную;
+  //  • F5 остаётся на той же странице;
+  //  • анимация сама понимает, вперёд идём или назад.
+  let navToken = null;
+  window.addEventListener('popstate', (e) => {
+    const target = e.state && SCENES.includes(e.state.scene) ? e.state.scene : 'intro';
+    if (target === scene) return;
+    const back = !navToken || (SCENES.indexOf(target) < SCENES.indexOf(navToken));
+    navToken = target;
+    navigate(target, back ? 'back' : 'forward');
+  });
+  const pushHistory = (s) => {
+    navToken = s;
+    history.pushState({ scene: s }, '', sceneHash(s));
+  };
+
+  // Плавный переход: старая сцена уплывает, новая въезжает СРАЗУ поверх неё.
+  // Анимация ставится на <main> целиком (вместе с фоном и шапкой) — так ничего не
+  // «микрофризит» на полпути: анимируются только GPU-дешёвые transform/opacity.
   let animating = false;
+  let navPromise = Promise.resolve();
   const EASE = 'cubic-bezier(.33,1,.68,1)';
   function animateOut(el, dir) {
     el.style.willChange = 'transform, opacity';
     return el.animate(
-      [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${dir === 'back' ? 34 : -34}px)` }],
+      [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${dir === 'back' ? 42 : -42}px)` }],
       { duration: 170, easing: EASE, fill: 'forwards' }
     ).finished.then(() => { el.remove(); }).catch(() => { el.remove(); });
   }
@@ -103,30 +146,34 @@
     el.classList.remove('sceneIn'); // анимируем только через WAAPI, без двойных эффектов
     el.style.willChange = 'transform, opacity';
     return el.animate(
-      [{ opacity: 0, transform: `translateX(${dir === 'back' ? -34 : 34}px)` }, { opacity: 1, transform: 'none' }],
+      [{ opacity: 0, transform: `translateX(${dir === 'back' ? -42 : 42}px)` }, { opacity: 1, transform: 'none' }],
       { duration: 320, delay: 90, easing: EASE, fill: 'both' }
     ).finished.then(() => { el.style.willChange = ''; }).catch(() => {});
   }
   async function navigate(next, dir = 'forward') {
-    if (animating || next === scene) return;
+    if (next === scene) return;
+    if (animating) { // новый клик во время анимации — дождаться и продолжить из актуальной точки
+      try { await navPromise; } catch { /* ignore */ }
+      if (next === scene) return;
+    }
     animating = true;
-    const oldEl = app.querySelector('section');
     direction = dir;
     scene = next;
+    const oldEl = app.querySelector('main');
+    render(); // рисует новый <main>; старый остаётся в DOM до cleanup
+    const newEl = app.querySelector('main');
     window.scrollTo(0, 0);
-    render();
-    const newEl = app.querySelector('section');
     if (oldEl && newEl && oldEl !== newEl) {
-      // Старая сцена остаётся видимой поверх новой только на время анимации
-      const r = newEl.getBoundingClientRect();
-      oldEl.style.position = 'absolute';
-      oldEl.style.top = r.top + window.scrollY + 'px';
-      oldEl.style.left = 0; oldEl.style.right = 0;
+      oldEl.style.position = 'fixed';
+      oldEl.style.inset = '0';
       oldEl.style.zIndex = 5;
-      await Promise.all([animateOut(oldEl, dir), animateIn(newEl, dir)]);
-    } else if (newEl) {
-      await animateIn(newEl, dir);
+      oldEl.style.overflow = 'hidden';
+      navPromise = Promise.all([animateOut(oldEl, dir), animateIn(newEl, dir)]);
+    } else {
+      navPromise = newEl ? animateIn(newEl, dir) : Promise.resolve();
     }
+    try { await navPromise; } catch { /* ignore */ }
+    app.querySelectorAll('main').forEach(m => { if (m !== newEl) m.remove(); });
     animating = false;
   }
 
@@ -140,7 +187,7 @@
         <button class="luxButton" id="enter"><span>ВОЙТИ В ЦЕРЕМОНИЮ</span></button>
         <div class="introFoot">ЛИСТАТЬ НЕ ОБЯЗАТЕЛЬНО <em>·</em> LKM — ЛЕВАЯ КНОПКА МЫШИ <em>·</em> <a class="adminLink" href="#admin">АДМИН</a></div>
       </section>`, 'ПРОЛОГ');
-    document.getElementById('enter').onclick = () => navigate(store.voter ? 'participants' : 'login');
+    document.getElementById('enter').onclick = () => { const t = store.voter ? 'participants' : 'login'; pushHistory(t); navigate(t); };
   }
 
   function portrait(p) {
@@ -158,7 +205,7 @@
         <div class="peopleGrid">${participants.map(personCard).join('')}</div>
         <div class="centerAction"><button class="luxButton" id="openCategories"><span>ОТКРЫТЬ НОМИНАЦИИ</span><b>→</b></button></div>
       </section>`, 'УЧАСТНИКИ');
-    document.getElementById('openCategories').onclick = () => navigate('categories');
+    document.getElementById('openCategories').onclick = () => { pushHistory('categories'); navigate('categories'); };
   }
 
   function renderLogin() {
@@ -180,7 +227,7 @@
       try {
         const d = await api('/api/register', { method: 'POST', body: { name: input.value } });
         store.voter = { token: d.token, name: d.name };
-        navigate('participants');
+        pushHistory('participants'); navigate('participants');
       } catch (e) { err.textContent = e.message; }
     };
     document.getElementById('voterGo').onclick = go;
@@ -197,7 +244,7 @@
     const doneCount = Object.keys(myVotes).length;
     shell(`
       <section class="categories sceneIn">
-        <div class="sectionHead categoryHead"><div class="heroKicker">ГРЕЧКА 2026 · 14 КАТЕГОРИЙ · ВАШИ ГОЛОСА: ${doneCount}/14</div><h1>НОМИНАЦИИ</h1><p>Выберите категорию. Судьба человечества подождёт.</p></div>
+        <div class="sectionHead categoryHead"><div class="heroKicker">ГРЕЧКА 2026 · ${CAT_COUNT} КАТЕГОРИЙ · ВАШИ ГОЛОСА: ${doneCount}/${CAT_COUNT}</div><h1>НОМИНАЦИИ</h1><p>Выберите категорию. Судьба человечества подождёт.</p></div>
         <div class="categoryLayout">
           <div class="categoryList" id="categoryList">${rows}</div>
           <aside class="categoryFeature" id="categoryFeature"><div class="featureTop"><span>${selected.n}</span><small>НОМИНАЦИЯ</small></div><h2>${esc(selected.title)}</h2><p>${esc(selected.desc)}</p><div class="featureRule"></div><button class="luxButton" id="openCategory"><span>ОТКРЫТЬ НОМИНАЦИЮ</span><b>→</b></button></aside>
@@ -220,7 +267,7 @@
     };
 
     document.querySelectorAll('.categoryRow').forEach(btn => btn.onclick = () => updateCategory(btn.dataset.category));
-    document.getElementById('openCategory').onclick = () => navigate('categoryDetail');
+    document.getElementById('openCategory').onclick = () => { pushHistory('categoryDetail'); navigate('categoryDetail'); };
   }
 
   function confirmVote(video) {
@@ -287,7 +334,7 @@
         const media = videoMode
           ? `<div class="videoWrap"><video controls preload="metadata" playsinline src="${esc(v.url)}"></video><span class="videoNum">0${i + 1}</span></div>
              <div class="videoMeta"><div><small>ВИДЕО №0${i + 1}</small><strong>${esc(v.title)}</strong></div><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`
-          : `<div class="imageWrap"><img src="${esc(v.url)}" alt="${esc(v.title)}" loading="lazy"><span class="videoNum">0${i + 1}</span></div>
+          : `<div class="imageWrap"><img src="${esc(v.url)}" alt="${esc(v.title)}" loading="lazy" decoding="async"><span class="videoNum">0${i + 1}</span></div>
              <div class="imageCaption"><b>${esc(v.title)}</b><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`;
         return `<article class="videoCard ${mine ? 'mine' : ''}">${media}</article>`;
       }).join('');
@@ -350,7 +397,7 @@
     root.innerHTML = `
       <div class="adminHead">
         <div><div class="heroKicker">ГРЕЧКА 2026</div><h1>АДМИНКА</h1></div>
-        <div class="adminTabs"><button data-tab="videos" class="on">ВИДЕО</button><button data-tab="results">ВЫБОР ЛЮДЕЙ</button><button data-tab="out">ВЫЙТИ</button></div>
+        <div class="adminTabs"><button data-tab="videos" class="on">НОМИНАЦИИ</button><button data-tab="people">ФОТО</button><button data-tab="results">ВЫБОР ЛЮДЕЙ</button><button data-tab="out">ВЫЙТИ</button></div>
       </div>
       <div id="adminBody"></div>`;
     const body = document.getElementById('adminBody');
@@ -370,7 +417,7 @@
       reload();
     };
 
-    function draw() { tab === 'videos' ? drawVideos() : drawResults(); }
+    function draw() { tab === 'videos' ? drawVideos() : tab === 'people' ? drawPeople() : drawResults(); }
 
     function drawVideos() {
       const list = overview.videos.filter(v => v.category === cat);
@@ -435,11 +482,99 @@
       drawQueue();
     }
 
+    // ---------- ФОТО УЧАСТНИКОВ (вкладка «ФОТО») ----------
+    function drawPeople() {
+      body.innerHTML = `
+        <div class="adminMain">
+          <h2>Лица церемонии</h2>
+          <p class="adminHint">Загрузите фотографию для каждого номинанта — она сразу появится на странице «УЧАСТНИКИ» у всех посетителей.</p>
+          <div class="peopleAdminGrid">${participants.map((p, i) => `
+            <div class="paCard" data-i="${i}">
+              <div class="paImg"><img src="${esc(p.img)}" alt="${esc(p.name)}"></div>
+              <b>${esc(p.name)}</b>
+              <button class="ghostBtn paUpload" data-i="${i}">ЗАГРУЗИТЬ ФОТО</button>
+              <input type="file" accept="image/*,.jpg,.jpeg,.png,.gif,.webp" hidden data-i="${i}">
+              <div class="paStatus"></div>
+            </div>`).join('')}</div>
+        </div>`;
+      body.querySelectorAll('.paUpload').forEach(btn => btn.onclick = () => {
+        const input = body.querySelector(`.paCard[data-i="${btn.dataset.i}"] input[type=file]`);
+        input.onchange = async () => {
+          const f = input.files[0]; if (!f) return;
+          const card = btn.closest('.paCard');
+          const st = card.querySelector('.paStatus');
+          if (!/\.(jpe?g|png|gif|webp)$/i.test(f.name)) { st.textContent = 'Только картинки (JPG, PNG, GIF, WEBP)'; return; }
+          if (f.size > 15 * 1024 * 1024) { st.textContent = 'Максимум 15 МБ'; return; }
+          st.textContent = 'Загрузка… 0%';
+          try {
+            const url = await new Promise((resolve, reject) => {
+              const xhr = new XMLHttpRequest();
+              xhr.open('PUT', `/api/admin/participant-photo?index=${btn.dataset.i}&name=${encodeURIComponent(participants[+btn.dataset.i].name + ' ' + (+btn.dataset.i + 1))}`);
+              xhr.setRequestHeader('x-admin', store.admin || '');
+              xhr.timeout = 300000;
+              xhr.upload.onprogress = (e) => { if (e.lengthComputable) st.textContent = `Загрузка… ${Math.round(e.loaded / e.total * 100)}%`; };
+              xhr.onload = () => {
+                if (xhr.status === 200) { try { resolve(JSON.parse(xhr.responseText).url); } catch (err) { reject(err); } }
+                else { let m = ''; try { m = JSON.parse(xhr.responseText).error; } catch {} reject(new Error(m || ('ошибка ' + xhr.status))); }
+              };
+              xhr.onerror = () => setTimeout(() => { // одна автоповторная попытка: Render после простоя «просыпается» со 2-го запроса
+                const y = new XMLHttpRequest();
+                y.open('PUT', `/api/admin/participant-photo?index=${btn.dataset.i}&name=${encodeURIComponent(participants[+btn.dataset.i].name + ' ' + (+btn.dataset.i + 1))}`);
+                y.setRequestHeader('x-admin', store.admin || '');
+                y.onload = () => { if (y.status === 200) { try { resolve(JSON.parse(y.responseText).url); } catch (err) { reject(err); } } else reject(new Error('сеть недоступна')); };
+                y.onerror = () => reject(new Error('сеть недоступна · попробуйте ещё раз'));
+                y.send(f);
+              }, 1500);
+              xhr.ontimeout = () => reject(new Error('таймаут загрузки'));
+              xhr.send(f);
+            });
+            participants[+btn.dataset.i].img = url;
+            localStorage.setItem('grechka_participants', JSON.stringify(participants));
+            card.querySelector('img').src = url;
+            st.textContent = 'ГОТОВО ✓';
+          } catch (e) { st.textContent = e.message || 'Ошибка загрузки'; }
+        };
+        input.click();
+      });
+    }
+
+    // загрузка с авторетраями: «ошибка сети» чаще всего бывает от обрыва соединения
+    // или когда Render «спит» после простоя — вторая попытка обычно уже проходит
+    function xhrPut(url, file, onprogress) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url);
+        xhr.setRequestHeader('x-admin', store.admin || '');
+        xhr.timeout = 600000; // 10 минут на крупные видео
+        xhr.upload.onprogress = (e) => { if (onprogress && e.lengthComputable) onprogress(Math.round(e.loaded / e.total * 100)); };
+        xhr.onload = () => {
+          if (xhr.status === 200) return resolve();
+          let msg = ''; try { msg = JSON.parse(xhr.responseText).error; } catch { /* ignore */ }
+          reject(new Error(msg || ('ошибка сервера ' + xhr.status)));
+        };
+        xhr.onerror = () => reject(new Error('сеть недоступна'));
+        xhr.ontimeout = () => reject(new Error('таймаут загрузки'));
+        xhr.onabort = () => reject(new Error('загрузка прервана'));
+        xhr.send(file);
+      });
+    }
+    async function uploadWithRetry(url, file, onprogress, attempts = 3) {
+      let lastErr;
+      for (let a = 1; a <= attempts; a++) {
+        try { return await xhrPut(url, file, (p) => onprogress && onprogress(p, a)); }
+        catch (e) {
+          lastErr = e;
+          if (a < attempts) await new Promise(r => setTimeout(r, 1500 * a)); // пауза перед повтором
+        }
+      }
+      throw lastErr;
+    }
+
     function drawQueue() {
       const q = document.getElementById('uploadQueue');
       if (!q) return;
       q.innerHTML = queue.filter(i => i.cat === cat).map(i => `
-        <div class="qItem ${i.state}"><span>${esc(i.name)}</span><div class="bar"><i style="width:${i.pct}%"></i></div><em>${i.state === 'error' ? esc(i.error) : i.state === 'done' ? 'ГОТОВО' : i.pct + '%'}</em></div>`).join('');
+        <div class="qItem ${i.state}"><span>${esc(i.name)}</span><div class="bar"><i style="width:${i.pct}%"></i></div><em>${i.state === 'error' ? esc(i.error) : i.state === 'done' ? 'ГОТОВО' : i.attempt > 1 ? `ПОВТОР ${i.attempt}/3` : i.pct + '%'}</em></div>`).join('');
     }
 
     let uploading = false;
@@ -449,8 +584,8 @@
         ? /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name)
         : /\.(jpe?g|png|gif|webp)$/i.test(f.name));
       const bad = files.filter(f => !ok.includes(f));
-      bad.forEach(f => queue.push({ cat, name: f.name, pct: 0, state: 'error', error: videoMode ? 'только видео (MP4, WebM, MOV)' : 'только картинки (JPG, PNG, GIF, WEBP)' }));
-      ok.forEach(f => queue.push({ cat, file: f, name: f.name, pct: 0, state: 'wait' }));
+      bad.forEach(f => queue.push({ cat, name: f.name, pct: 0, state: 'error', attempt: 1, error: videoMode ? 'только видео (MP4, WebM, MOV)' : 'только картинки (JPG, PNG, GIF, WEBP)' }));
+      ok.forEach(f => queue.push({ cat, file: f, name: f.name, pct: 0, state: 'wait', attempt: 1 }));
       drawQueue();
       runQueue();
     }
@@ -460,19 +595,18 @@
       let item;
       while ((item = queue.find(i => i.state === 'wait'))) {
         item.state = 'up';
-        await new Promise(resolve => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('PUT', `/api/admin/upload?category=${item.cat}&name=${encodeURIComponent(item.name)}`);
-          xhr.setRequestHeader('x-admin', store.admin || '');
-          xhr.upload.onprogress = (e) => { if (e.lengthComputable) { item.pct = Math.round(e.loaded / e.total * 100); drawQueue(); } };
-          xhr.onload = () => {
-            if (xhr.status === 200) { item.state = 'done'; item.pct = 100; }
-            else { item.state = 'error'; try { item.error = JSON.parse(xhr.responseText).error; } catch { item.error = 'ошибка ' + xhr.status; } }
-            delete item.file; drawQueue(); resolve();
-          };
-          xhr.onerror = () => { item.state = 'error'; item.error = 'сеть недоступна'; delete item.file; drawQueue(); resolve(); };
-          xhr.send(item.file);
-        });
+        try {
+          await uploadWithRetry(
+            `/api/admin/upload?category=${item.cat}&name=${encodeURIComponent(item.name)}`,
+            item.file,
+            (pct, attempt) => { item.pct = pct; item.attempt = attempt; drawQueue(); }
+          );
+          item.state = 'done'; item.pct = 100;
+        } catch (e) {
+          item.state = 'error';
+          item.error = (e.message || 'ошибка') + ' · попробуйте ещё раз';
+        }
+        delete item.file; drawQueue();
       }
       uploading = false;
       if (tab === 'videos') {
@@ -494,9 +628,18 @@
         }).join('')}</div>
         <h2 class="subH">КТО ЧТО ВЫБРАЛ</h2>
         <div class="voterTable">${overview.voters.length ? overview.voters.map(v => `
-          <div class="voterRow"><div class="vName"><b>${esc(v.name)}</b><small>${v.choices.length}/14</small></div>
-          <div class="vChoices">${v.choices.length ? v.choices.sort((a, b) => a.category.localeCompare(b.category)).map(ch => `<span><em>${ch.category}</em> ${esc(categories.find(c => c.n === ch.category)?.title || '')} → <b>${esc(ch.title)}</b></span>`).join('') : '<small>ещё не голосовал</small>'}</div></div>`).join('') : '<div class="emptyState">Пока никто не зашёл.</div>'}</div>`;
+          <div class="voterRow"><div class="vName"><b>${esc(v.name)}</b><small>${v.choices.length}/${CAT_COUNT}</small></div>
+          <div class="vChoices">${v.choices.length ? v.choices.sort((a, b) => a.category.localeCompare(b.category)).map(ch => `<span><em>${ch.category}</em> ${esc(categories.find(c => c.n === ch.category)?.title || '')} → <b>${esc(ch.title)}</b> <button class="chipDel" data-voter="${esc(ch.voterId)}" data-cat="${esc(ch.category)}" title="Удалить этот голос из базы">×</button></span>`).join('') : '<small>ещё не голосовал</small>'}</div></div>`).join('') : '<div class="emptyState">Пока никто не зашёл.</div>'}</div>`;
     }
+
+    // удаление голоса прямо из таблицы «КТО ЧТО ВЫБРАЛ» — запрос идёт на сервер, запись удаляется из БД
+    body.querySelectorAll('.chipDel').forEach(btn => btn.onclick = async () => {
+      if (!confirm('Удалить этот голос? Зритель сможет проголосовать в этой номинации заново.')) return;
+      try {
+        await api(`/api/admin/votes/${btn.dataset.voter}/${btn.dataset.cat}`, { method: 'DELETE', admin: true });
+        reload();
+      } catch (e) { alert(e.message); }
+    });
 
     // чтобы браузер не открывал видео, если уронить файл мимо зоны
     const stop = e => { if (scene === 'admin' && !e.target.closest?.('#dropzone')) { e.preventDefault(); } };
@@ -513,14 +656,17 @@
     if (scene === 'categoryDetail') renderCategoryDetail();
     if (scene === 'admin') renderAdmin();
     // Запоминаем текущую страницу в адресе, чтобы F5 не выбрасывал на главную
-    if (scene !== 'admin') history.replaceState(null, '', sceneHash(scene));
+    if (scene !== 'admin' && (!history.state || history.state.scene !== scene)) history.replaceState({ scene }, '', sceneHash(scene));
   }
 
-  const isAdminHash = () => location.hash === '#admin' || location.hash.startsWith('#admin/');
+  // Ссылка «АДМИН» (#admin) — отдельный путь без записи в историю сайта
   window.addEventListener('hashchange', () => {
-    if (!isAdminHash() && scene !== 'intro') navigate('intro', 'back');
-    else if (isAdminHash() && scene === 'intro') navigate('admin');
+    if (location.hash === '#admin' && scene !== 'admin') navigate('admin');
+    else if (location.hash !== '#admin' && scene === 'admin') navigate('intro', 'back');
   });
   if (location.hash === '#admin') scene = 'admin';
   render();
+  // Первая сцена тоже становится записью истории — тогда браузерная «назад»
+  // уходит с неё на предыдущую страницу сайта, а не сразу на главную.
+  if (scene !== 'admin' && !history.state) pushHistory(scene);
 })();
