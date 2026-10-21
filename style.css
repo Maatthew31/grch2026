@@ -148,15 +148,15 @@ body{min-height:100%;overflow-x:hidden}
 .adminVideos{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px;margin-top:26px}
 .adminVideo{border:1px solid rgba(214,179,106,.16);background:rgba(15,13,10,.7);min-width:0}
 .adminVideo video{width:100%;aspect-ratio:16/9;background:#000;display:block}
-.adminVideo img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;background:#0a0a0a}
+.adminVideo img{width:100%;max-height:300px;aspect-ratio:4/3;object-fit:contain;display:block;background:#0a0a0a}
 /* сетка картинок-номинантов (все номинации, кроме «Откат года») */
 .imageGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:20px}
 /* карточки — flex-колонки: картинка всегда точно по рамке, подпись снизу не прыгает */
 .videoCardI,.videoCardV{display:flex;flex-direction:column;min-width:0}
-.imageWrap{position:relative;background:#050505;aspect-ratio:4/3;overflow:hidden;flex-shrink:0;width:100%}
-/* фото показывается ЦЕЛИКОМ (object-fit:contain) — ничего не обрезается;
-   frame — тонкая золотая рамка ровно по краю видимого изображения */
-.imageWrap img{width:100%;height:100%;object-fit:contain;display:block}
+.imageWrap{position:relative;background:#050505;overflow:hidden;flex-shrink:0;width:100%;display:flex;align-items:center;justify-content:center;min-height:240px;max-height:46vh}
+/* фото показывается ЦЕЛИКОМ: картинка сама подбирает размер под рамку,
+   пропорции сохраняются, ничего не обрезается и не искажается */
+.imageWrap img{max-width:100%;max-height:46vh;width:auto;height:auto;object-fit:contain;display:block}
 .imageWrap .frame{position:absolute;top:6px;left:6px;right:6px;bottom:6px;border:1px solid rgba(214,179,106,.28);pointer-events:none}
 .imageCaption{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-top:1px solid rgba(214,179,106,.14);flex-wrap:wrap;flex-grow:1;min-height:74px}
 .imageCaption b{font:600 13px Manrope;letter-spacing:.14em;color:#eee6d7;text-transform:uppercase;word-break:break-word;min-width:0}
@@ -189,7 +189,7 @@ body{min-height:100%;overflow-x:hidden}
 .peopleAdminGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px}
 .paCard{border:1px solid rgba(214,179,106,.16);background:rgba(15,13,10,.7);padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
 .paImg{aspect-ratio:3/4;background:#15130f;overflow:hidden}
-.paImg img{width:100%;height:100%;object-fit:cover;display:block}
+.paImg{display:flex;align-items:center;justify-content:center}.paImg img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;display:block}
 .paCard b{font:600 11px Manrope;letter-spacing:.18em;text-align:center;color:#eee6d7}
 .paCard .ghostBtn{height:38px;width:100%;justify-content:center;font-size:8px}
 .paStatus{min-height:16px;font-size:10px;letter-spacing:.06em;color:#9fcf9a;text-align:center}

@@ -91,7 +91,8 @@ app.post('/api/admin/login', async (req, res) => {
 });
 
 // ---------- PUBLIC DATA ----------
-const VIDEO_CAT = '08'; // «Откат года» — единственная видео-номинация, остальные — картинки
+const VIDEO_CATS = ['08', '10']; // «Откат года» и «Кружок года» — видео; остальные номинации — картинки
+const isVideoCatN = (n) => VIDEO_CATS.includes(n);
 
 app.get('/api/videos', async (req, res) => {
   try {
@@ -269,10 +270,24 @@ app.delete('/api/admin/videos/:id', async (req, res) => {
 });
 
 // загрузка файла: PUT /api/admin/upload?category=01&name=file.png  (тело = сырые байты)
-// Номинация '08' (Откат года) принимает только видео, остальные — только картинки.
-const VIDEO_EXT = ['mp4', 'webm', 'mov', 'm4v', 'ogv'];
-const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-const MAX_VIDEO = 200 * 1024 * 1024, MAX_IMAGE = 15 * 1024 * 1024;
+// Номинации '08' (Откат года) и '10' (Кружок года) принимают только видео, остальные — только картинки.
+const MAX_VIDEO = 50 * 1024 * 1024, MAX_IMAGE = 15 * 1024 * 1024;
+
+// определение реального типа файла по первым байтам (magic bytes),
+// чтобы не зависеть от расширения в имени (Windows любит присылать .JPG/.MP4 с заглавными)
+function sniffType(buf) {
+  const b = buf.subarray(0, 16);
+  const hex = Buffer.from(b).toString('hex');
+  const str = Buffer.from(b.subarray(0, 12)).toString('latin1');
+  if (b[0] === 0xFF && b[1] === 0xD8) return { ext: 'jpg', mime: 'image/jpeg', image: true, video: false };
+  if (hex.startsWith('89504e47')) return { ext: 'png', mime: 'image/png', image: true, video: false };
+  if (str.startsWith('GIF8')) return { ext: 'gif', mime: 'image/gif', image: true, video: false };
+  if (str.startsWith('RIFF') && str.slice(8, 12) === 'WEBP') return { ext: 'webp', mime: 'image/webp', image: true, video: false };
+  if (str.slice(4, 8) === 'ftyp') return { ext: 'mp4', mime: 'video/mp4', image: false, video: true }; // mp4/mov/m4v
+  if (b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3) return { ext: 'webm', mime: 'video/webm', image: false, video: true }; // matroska/webm
+  if (str.slice(0, 4) === 'OggS') return { ext: 'ogv', mime: 'video/ogg', image: false, video: true };
+  return { ext: '', mime: 'application/octet-stream', image: false, video: false };
+}
 
 app.put('/api/admin/upload', async (req, res) => {
   try {
@@ -281,31 +296,35 @@ app.put('/api/admin/upload', async (req, res) => {
     const name = cleanName(req.query.name) || 'file';
     if (!/^\d{2}$/.test(category)) return res.status(400).json({ error: 'Некорректная номинация' });
     const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
-    const isVideoCat = category === VIDEO_CAT;
+    const isVideoCat = isVideoCatN(category);
     const kind = isVideoCat ? 'video' : 'image';
-    if (isVideoCat && !VIDEO_EXT.includes(ext)) return res.status(400).json({ error: `В «Откат года» можно загружать только видео (${VIDEO_EXT.join(', ')})` });
-    if (!isVideoCat && !IMAGE_EXT.includes(ext)) return res.status(400).json({ error: `В эту номинацию можно загружать только картинки (${IMAGE_EXT.join(', ')})` });
+    // расширение файла больше не является истиной — тип определим по содержимому (magic bytes),
+    // иначе браузеры и Windows любят присылать .JPG вместо .jpg, Safari — без расширения и т.п.
     const chunks = [];
-    let total = 0;
+    let total = 0, tooBig = false;
     const limit = isVideoCat ? MAX_VIDEO : MAX_IMAGE;
     req.on('data', c => {
+      if (tooBig) return; // тело просто досчитываем и выбрасываем, req.destroy() ломает ответ
       total += c.length;
       if (total > limit) {
-        res.status(413).json({ error: `Файл слишком большой (максимум ${isVideoCat ? '200 МБ для видео' : '15 МБ для картинок'})` });
-        req.destroy();
+        tooBig = true;
+        res.status(413).json({ error: `Файл слишком большой (максимум ${isVideoCat ? '50 МБ для видео' : '15 МБ для картинок'})` });
         return;
       }
       chunks.push(c);
     });
     req.on('end', async () => {
       try {
+        if (tooBig) return; // ответ 413 уже отправлен
         const buf = Buffer.concat(chunks);
         if (!buf.length) return res.status(400).json({ error: 'Пустой файл' });
+        const real = sniffType(buf); // тип по содержимому, а не по имени файла
+        if (isVideoCat && !real.video) return res.status(400).json({ error: `В видео-номинации можно загружать только видео (MP4, WebM, MOV)` });
+        if (!isVideoCat && !real.image) return res.status(400).json({ error: `В эту номинацию можно загружать только картинки (JPG, PNG, GIF, WEBP)` });
         const id = uid();
-        const filePath = `${category}/${id}.${ext}`;
-        const mime = MIME[ext] || 'application/octet-stream';
+        const filePath = `${category}/${id}.${real.ext}`;
         const { error: upErr } = await db.storage.from('videos')
-          .upload(filePath, buf, { contentType: mime, upsert: false });
+          .upload(filePath, buf, { contentType: real.mime, upsert: false });
         if (upErr) throw upErr;
         await db.from('videos').insert({ id, category, kind, title: name.replace(/\.[a-z0-9]+$/i, ''), path: filePath, size: buf.length });
         res.json({ ok: true, id });
@@ -322,29 +341,32 @@ app.put('/api/admin/participant-photo', async (req, res) => {
     const index = Number(req.query.index);
     if (!Number.isInteger(index) || index < 0 || index >= PARTICIPANT_COUNT) return res.status(400).json({ error: 'Некорректный номинант' });
     const name = cleanName(req.query.name) || `participant-${index + 1}`;
-    const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
-    if (!IMAGE_EXT.includes(ext)) return res.status(400).json({ error: `Можно загружать только картинки (${IMAGE_EXT.join(', ')})` });
     const chunks = [];
-    let total = 0;
+    let total = 0, tooBigP = false;
     req.on('data', c => {
+      if (tooBigP) return; // тело досчитываем и выбрасываем; req.destroy() ломал ответ 413
       total += c.length;
       if (total > MAX_IMAGE) {
+        tooBigP = true;
         res.status(413).json({ error: 'Файл слишком большой (максимум 15 МБ)' });
-        req.destroy();
         return;
       }
       chunks.push(c);
     });
     req.on('end', async () => {
       try {
+        if (tooBigP) return; // ответ 413 уже отправлен
         const buf = Buffer.concat(chunks);
         if (!buf.length) return res.status(400).json({ error: 'Пустой файл' });
+        const real = sniffType(buf); // тип по содержимому, а не по расширению в имени (.JPG/.png — ок)
+        if (!real.image) return res.status(400).json({ error: 'Можно загружать только картинки (JPG, PNG, GIF, WEBP)' });
         const id = uid();
-        const filePath = `participants/${id}.${ext}`;
+        const filePath = `participants/${id}.${real.ext}`;
         const { error: upErr } = await db.storage.from('videos')
-          .upload(filePath, buf, { contentType: MIME[ext] || 'application/octet-stream', upsert: false });
+          .upload(filePath, buf, { contentType: real.mime, upsert: false });
         if (upErr) throw upErr;
-        await db.from('videos').insert({ id, category: 'PP', kind: 'image', title: name.replace(/\.[a-z0-9]+$/i, ''), path: filePath, size: buf.length });
+        // title = «ИМЯ номер»: страница участников сортирует фото PP по числу в конце названия
+        await db.from('videos').insert({ id, category: 'PP', kind: 'image', title: `${name} ${index + 1}`, path: filePath, size: buf.length });
         res.json({ ok: true, id, url: `/api/video/${id}` });
       } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка загрузки' }); }
     });
