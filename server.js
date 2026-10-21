@@ -29,14 +29,20 @@ app.use(express.json({ limit: '1mb' }));
 // Uploads are streamed raw; make sure proxies never buffer the whole body.
 app.use((req, res, next) => {
   if (req.method === 'PUT') req.setTimeout(600000, () => {});
-  res.set('Cache-Control', 'no-store');
   next();
 });
-app.use(express.static(__dirname, { index: 'index.html', maxAge: '1h' }));
+// API всегда без кэша — иначе браузер покажет старые результаты/списки
+app.use('/api', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+// Статика с коротким кэшем: при выкатке обновления браузер подхватит его сам,
+// «чёрных экранов из-за старого кэша» больше быть не может
+app.use(express.static(__dirname, { index: 'index.html', maxAge: 0, etag: true }));
 
 // SPA-навигация: любой неизвестный GET возвращаем index.html,
 // чтобы F5 и прямые заходы работали на любой странице сайта
-app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get(/^\/(?!api\/).*/, (req, res) => {
+  res.set('Cache-Control', 'no-cache'); // HTML всегда проверяется на свежесть
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 // ---------- helpers ----------
 const uid = () => crypto.randomUUID();
@@ -355,7 +361,7 @@ app.get('/api/admin/overview', async (req, res) => {
           category: t.category,
           title: videos?.find(x => x.id === t.video_id)?.title || '?'
         }))
-      })),
+      })).filter(v => v.choices.length), // без голосов показывать нечего — таблица «КТО ЧТО ВЫБРАЛ» только для проголосовавших
       videos: (videos || []).map(v => ({
         ...v, url: `/api/video/${v.id}`,
         voters: (votes || []).filter(t => t.video_id === v.id).map(t => nameOf[t.voter_id]).filter(Boolean)

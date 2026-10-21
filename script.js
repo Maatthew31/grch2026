@@ -110,6 +110,9 @@
   const esc = (value) => String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 
   function shell(content, label) {
+    // Страховка от «чёрного экрана»: перед каждой перерисовкой убираем все
+    // оставшиеся <main> (старые узлы из анимаций предыдущих переходов).
+    app.querySelectorAll('main').forEach(m => m.remove());
     app.innerHTML = `
       <main class="app ${scene} ${direction === 'back' ? 'backScene' : ''}">
         <div class="background"><div class="light l1"></div><div class="light l2"></div><div class="vignette"></div></div>
@@ -158,64 +161,30 @@
     navigate(prev, 'back');
   }
 
-  // Плавный переход: старая сцена уплывает, новая въезжает СРАЗУ поверх неё.
-  // Анимация ставится на <main> целиком (вместе с фоном и шапкой) — так ничего не
-  // «микрофризит» на полпути: анимируются только GPU-дешёвые transform/opacity.
-  // Защита от чёрного экрана: cleanup в finally + таймер-подстраховка + очистка
-  // всех лишних <main> перед каждым переходом.
+  // Плавный переход: новая сцена въезжает поверх. Анимация ставится на <main>
+  // целиком (вместе с фоном и шапкой) — анимируются только GPU-дешёвые
+  // transform/opacity, поэтому нет микрофризов. Старый <main> shell() убирает сам,
+  // так что «чёрного экрана» из-за зависшей анимации быть не может в принципе.
   let animating = false;
-  let navPromise = Promise.resolve();
   const EASE = 'cubic-bezier(.33,1,.68,1)';
-  function animateOut(el, dir) {
-    el.style.pointerEvents = 'none';
-    el.style.willChange = 'transform, opacity';
-    return el.animate(
-      [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${dir === 'back' ? 42 : -42}px)` }],
-      { duration: 170, easing: EASE, fill: 'forwards' }
-    ).finally(() => { try { el.remove(); } catch {} });
-  }
   function animateIn(el, dir) {
     el.classList.remove('sceneIn'); // анимируем только через WAAPI, без двойных эффектов
     el.style.willChange = 'transform, opacity';
     return el.animate(
       [{ opacity: 0, transform: `translateX(${dir === 'back' ? -42 : 42}px)` }, { opacity: 1, transform: 'none' }],
-      { duration: 320, delay: 90, easing: EASE, fill: 'both' }
+      { duration: 320, easing: EASE, fill: 'both' }
     ).finally(() => { el.style.willChange = ''; });
   }
   async function navigate(next, dir = 'forward') {
-    if (next === scene) return;
-    if (animating) { // новый клик во время анимации — дождаться и продолжить из актуальной точки
-      try { await navPromise; } catch { /* ignore */ }
-      if (next === scene) return;
-    }
+    if (next === scene && app.querySelector('main')) return;
     animating = true;
     direction = dir;
     scene = next;
-    const oldEl = app.querySelector('main');
-    render(); // рисует новый <main>; старый остаётся в DOM до cleanup
-    const newEl = app.querySelector('main');
     window.scrollTo(0, 0);
-    // страховка: даже если анимация зависнет/выкинет исключение — через 600мс
-    // принудительно оставляем ровно один (новый) main, чтобы экран не почернел
-    const safety = setTimeout(() => {
-      app.querySelectorAll('main').forEach(m => { if (m !== newEl) m.remove(); });
-      animating = false;
-    }, 600);
-    if (oldEl && newEl && oldEl !== newEl) {
-      oldEl.style.position = 'fixed';
-      oldEl.style.inset = '0';
-      oldEl.style.zIndex = 5;
-      oldEl.style.pointerEvents = 'none';
-      navPromise = Promise.all([animateOut(oldEl, dir), animateIn(newEl, dir)]);
-    } else {
-      navPromise = newEl ? animateIn(newEl, dir) : Promise.resolve();
-    }
-    try { await navPromise; } catch { /* ignore */ }
-    finally {
-      clearTimeout(safety);
-      app.querySelectorAll('main').forEach(m => { if (m !== newEl) m.remove(); });
-      animating = false;
-    }
+    render(); // shell() сам убирает все старые <main> — гарантированно один узел
+    const newEl = app.querySelector('main');
+    animating = false;
+    if (newEl) { try { await animateIn(newEl, dir); } catch { /* ignore */ } }
   }
 
   function renderIntro() {
@@ -375,7 +344,7 @@
         const media = videoMode
           ? `<div class="videoWrap"><video controls preload="metadata" playsinline src="${esc(v.url)}"></video><span class="videoNum">0${i + 1}</span></div>
              <div class="videoMeta"><div><small>ВИДЕО №0${i + 1}</small><strong>${esc(v.title)}</strong></div><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`
-          : `<div class="imageWrap"><img src="${esc(v.url)}" alt="${esc(v.title)}" loading="lazy" decoding="async"><span class="videoNum">0${i + 1}</span></div>
+          : `<div class="imageWrap"><img src="${esc(v.url)}" alt="${esc(v.title)}" loading="lazy" decoding="async"><span class="frame"></span><span class="videoNum">0${i + 1}</span></div>
              <div class="imageCaption"><b>${esc(v.title)}</b><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`;
         return `<article class="videoCard ${videoMode ? 'videoCardV' : 'videoCardI'} ${mine ? 'mine' : ''}">${media}</article>`;
       }).join('');
@@ -678,13 +647,17 @@
           <div class="vChoices">${v.choices.length ? v.choices.sort((a, b) => a.category.localeCompare(b.category)).map(ch => `<span><em>${ch.category}</em> ${esc(categories.find(c => c.n === ch.category)?.title || '')} → <b>${esc(ch.title)}</b> <button class="chipDel" data-voter="${esc(ch.voterId)}" data-cat="${esc(ch.category)}" title="Удалить этот голос из базы">×</button></span>`).join('') : '<small>ещё не голосовал</small>'}</div></div>`).join('') : '<div class="emptyState">Пока никто не зашёл.</div>'}</div>`;
     }
 
-    // удаление голоса прямо из таблицы «КТО ЧТО ВЫБРАЛ» — запрос идёт на сервер, запись удаляется из БД
-    body.querySelectorAll('.chipDel').forEach(btn => btn.onclick = async () => {
+    // удаление голоса прямо из таблицы «КТО ЧТО ВЫБРАЛ» — запрос идёт на сервер, запись удаляется из БД.
+    // Слушаем КЛИКИ на контейвере: обработчик переживает любую перерисовку (reload),
+    // поэтому крестик работает всегда, а не только сразу после первой отрисовки.
+    body.addEventListener('click', async (e) => {
+      const btn = e.target.closest?.('.chipDel');
+      if (!btn) return;
       if (!confirm('Удалить этот голос? Зритель сможет проголосовать в этой номинации заново.')) return;
       try {
         await api(`/api/admin/votes/${btn.dataset.voter}/${btn.dataset.cat}`, { method: 'DELETE', admin: true });
         reload();
-      } catch (e) { alert(e.message); }
+      } catch (err) { alert(err.message); }
     });
 
     // чтобы браузер не открывал видео, если уронить файл мимо зоны

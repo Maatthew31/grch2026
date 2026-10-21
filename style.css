@@ -154,11 +154,15 @@ body{min-height:100%;overflow-x:hidden}
 /* карточки — flex-колонки: картинка всегда точно по рамке, подпись снизу не прыгает */
 .videoCardI,.videoCardV{display:flex;flex-direction:column;min-width:0}
 .imageWrap{position:relative;background:#050505;aspect-ratio:4/3;overflow:hidden;flex-shrink:0;width:100%}
-.imageWrap img{width:100%;height:100%;object-fit:cover;display:block}
+/* фото показывается ЦЕЛИКОМ (object-fit:contain) — ничего не обрезается;
+   frame — тонкая золотая рамка ровно по краю видимого изображения */
+.imageWrap img{width:100%;height:100%;object-fit:contain;display:block}
+.imageWrap .frame{position:absolute;top:6px;left:6px;right:6px;bottom:6px;border:1px solid rgba(214,179,106,.28);pointer-events:none}
 .imageCaption{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-top:1px solid rgba(214,179,106,.14);flex-wrap:wrap;flex-grow:1;min-height:74px}
 .imageCaption b{font:600 13px Manrope;letter-spacing:.14em;color:#eee6d7;text-transform:uppercase;word-break:break-word;min-width:0}
 .imageCaption .voteBtn{flex-shrink:0}
 @media(max-width:900px){.imageGrid{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}}
+@media(min-width:1250px){.imageGrid{grid-template-columns:repeat(5,minmax(0,1fr))}} /* до 10 фото = 2 ряда по 5 на десктопе */
 @media(max-width:600px){.imageGrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.imageCaption{padding:10px;gap:8px;min-height:64px}.imageCaption b{font-size:11px;letter-spacing:.08em}.videoMeta{padding:12px}.videoMeta strong{font-size:12px}}
 .avInfo{padding:14px 16px 6px;display:flex;flex-direction:column;gap:4px}.avInfo strong{font-weight:600;font-size:14px;word-break:break-word}.avInfo small{color:#8d877b;font-size:11px}
 .avActions{display:flex;gap:8px;padding:10px 16px 16px}
