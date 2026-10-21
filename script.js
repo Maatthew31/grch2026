@@ -57,6 +57,7 @@
   };
   let myVotes = {};      // category -> videoId
   let videosByCat = {};  // category -> [video]
+  let coversByCat = {};  // category -> url обложки 16:9 (фон кнопки в списке номинаций)
 
   async function api(path, { method = 'GET', body, admin = false } = {}) {
     const headers = {};
@@ -97,7 +98,7 @@
   async function loadVideos() {
     try {
       const d = await api('/api/videos');
-      videosByCat = d.videos; myVotes = d.myVotes;
+      videosByCat = d.videos; myVotes = d.myVotes; coversByCat = d.covers || {};
     } catch (e) {
       if (e.status === 401) { store.voter = null; navigate('login'); }
       throw e;
@@ -247,9 +248,11 @@
 
   async function renderCategories() {
     try { await loadVideos(); } catch { return; }
+    // Обложка 16:9 фоном кнопки + затемняющий градиент, чтобы текст читался всегда.
     const rows = categories.map(c => {
       const done = !!myVotes[c.n];
-      return `<button class="categoryRow ${selected.n === c.n ? 'active' : ''} ${done ? 'done' : ''}" data-category="${c.n}"><span>${c.n}</span><strong>${esc(c.title)}</strong><i>${done ? '✓' : '↗'}</i></button>`;
+      const cover = coversByCat[c.n];
+      return `<button class="categoryRow ${selected.n === c.n ? 'active' : ''} ${done ? 'done' : ''} ${cover ? 'hasCover' : ''}" data-category="${c.n}" style="${cover ? `--cover:url('${esc(cover)}')` : ''}"><span class="crNum">${c.n}</span><strong>${esc(c.title)}</strong><i>${done ? '✓' : '↗'}</i></button>`;
     }).join('');
     const doneCount = Object.keys(myVotes).length;
     shell(`
@@ -257,9 +260,18 @@
         <div class="sectionHead categoryHead"><div class="heroKicker">ГРЕЧКА 2026 · ${CAT_COUNT} КАТЕГОРИЙ · ВАШИ ГОЛОСА: ${doneCount}/${CAT_COUNT}</div><h1>НОМИНАЦИИ</h1><p>Выберите категорию. Судьба человечества подождёт.</p></div>
         <div class="categoryLayout">
           <div class="categoryList" id="categoryList">${rows}</div>
-          <aside class="categoryFeature" id="categoryFeature"><div class="featureTop"><span>${selected.n}</span><small>НОМИНАЦИЯ</small></div><h2>${esc(selected.title)}</h2><p>${esc(selected.desc)}</p><div class="featureRule"></div><button class="luxButton" id="openCategory"><span>ОТКРЫТЬ НОМИНАЦИЮ</span><b>→</b></button></aside>
+          <aside class="categoryFeature" id="categoryFeature"><div class="cfCover" id="cfCover"></div><div class="featureTop"><span>${selected.n}</span><small>НОМИНАЦИЯ</small></div><h2>${esc(selected.title)}</h2><p>${esc(selected.desc)}</p><div class="featureRule"></div><button class="luxButton" id="openCategory"><span>ОТКРЫТЬ НОМИНАЦИЮ</span><b>→</b></button></aside>
         </div>
       </section>`, 'НОМИНАЦИИ');
+
+    const updateFeatureCover = () => {
+      const cf = document.getElementById('cfCover');
+      if (!cf) return;
+      const url = coversByCat[selected.n];
+      cf.style.backgroundImage = url ? `url('${url}')` : '';
+      cf.classList.toggle('on', !!url);
+    };
+    updateFeatureCover();
 
     const updateCategory = (number) => {
       const next = categories.find(c => c.n === number);
@@ -270,6 +282,7 @@
       feature.querySelector('.featureTop span').textContent = selected.n;
       feature.querySelector('h2').textContent = selected.title;
       feature.querySelector('p').textContent = selected.desc;
+      updateFeatureCover();
       feature.animate([
         { opacity: .55, transform: 'translateY(8px)' },
         { opacity: 1, transform: 'translateY(0)' }
@@ -407,7 +420,7 @@
     root.innerHTML = `
       <div class="adminHead">
         <div><div class="heroKicker">ГРЕЧКА 2026</div><h1>АДМИНКА</h1></div>
-        <div class="adminTabs"><button data-tab="videos" class="on">НОМИНАЦИИ</button><button data-tab="people">ФОТО</button><button data-tab="results">ВЫБОР ЛЮДЕЙ</button><button data-tab="out">ВЫЙТИ</button></div>
+        <div class="adminTabs"><button data-tab="videos" class="on">НОМИНАЦИИ</button><button data-tab="covers">ОБЛОЖКИ</button><button data-tab="people">ФОТО</button><button data-tab="results">ВЫБОР ЛЮДЕЙ</button><button data-tab="out">ВЫЙТИ</button></div>
       </div>
       <div id="adminBody"></div>`;
     const body = document.getElementById('adminBody');
@@ -429,7 +442,11 @@
       reload();
     };
 
-    function draw() { tab === 'videos' ? drawVideos() : tab === 'people' ? drawPeople() : drawResults(); }
+    function draw() { tab === 'videos' ? drawVideos() : tab === 'covers' ? drawCovers() : tab === 'people' ? drawPeople() : drawResults(); }
+
+    // счётчик номинантов для списка слева (обложки CV и фото PP не считаем)
+    const catCount = (c) => overview.videos.filter(v => v.category === c.n).length;
+    const coverOf = (c) => overview.videos.find(v => v.category === 'CV' && v.title === c);
 
     function drawVideos() {
       const list = overview.videos.filter(v => v.category === cat);
@@ -437,8 +454,8 @@
       body.innerHTML = `
         <div class="adminCols">
           <nav class="adminCats">${categories.map(c => {
-            const n = overview.videos.filter(v => v.category === c.n).length;
-            return `<button data-cat="${c.n}" class="${c.n === cat ? 'on' : ''}"><span>${c.n}</span><strong>${esc(c.title)}</strong><em>${n}</em></button>`;
+            const n = catCount(c.n);
+            return `<button data-cat="${c.n}" class="${c.n === cat ? 'on' : ''}"><span>${c.n}</span><strong>${esc(c.title)}</strong><em>${n}${coverOf(c.n) ? ' ✦' : ''}</em></button>`;
           }).join('')}</nav>
           <div class="adminMain">
             <h2>${esc(categories.find(c => c.n === cat).title)}</h2>
@@ -492,6 +509,48 @@
         } catch (err) { alert(err.message); }
       };
       drawQueue();
+    }
+
+    // ---------- ОБЛОЖКИ НОМИНАЦИЙ (вкладка «ОБЛОЖКИ») ----------
+    // Картинка 16:9, которая ставится фоном кнопки номинации на странице «НОМИНАЦИИ».
+    function drawCovers() {
+      body.innerHTML = `
+        <div class="adminMain">
+          <h2>Обложки номинаций</h2>
+          <p class="adminHint">Картинка 16:9 станет фоном кнопки номинации на странице «НОМИНАЦИИ» у всех посетителей. Рекомендуем ~1280×720, JPG/WEBG до 8 МБ. Текст поверх обложки затемняется градиентом — картинку лучше выбирать спокойной по центру.</p>
+          <div class="coverGrid">${categories.map(c => {
+            const cv = coverOf(c.n);
+            return `<div class="cvCard" data-cat="${c.n}">
+              <div class="cvImg ${cv ? 'on' : ''}">${cv ? `<img src="${esc(cv.url)}" alt="" loading="lazy">` : '<small>без обложки</small>'}</div>
+              <b>${c.n} · ${esc(c.title)}</b>
+              <div class="cvActions"><button class="ghostBtn cvUpload" data-cat="${c.n}">${cv ? 'ЗАМЕНИТЬ' : 'ЗАГРУЗИТЬ'}</button>${cv ? `<button class="ghostBtn danger cvRemove" data-cat="${c.n}">УБРАТЬ</button>` : ''}</div>
+              <input type="file" accept="image/*" hidden data-cat="${c.n}">
+              <div class="paStatus"></div>
+            </div>`;
+          }).join('')}</div>
+        </div>`;
+      body.querySelectorAll('.cvUpload').forEach(btn => btn.onclick = () => {
+        const cNum = btn.dataset.cat;
+        const card = body.querySelector(`.cvCard[data-cat="${cNum}"]`);
+        const input = card.querySelector('input[type=file]');
+        input.onchange = async () => {
+          const f = input.files[0]; if (!f) return;
+          const st = card.querySelector('.paStatus');
+          if (f.size > 8 * 1024 * 1024) { st.textContent = 'Максимум 8 МБ'; return; }
+          st.textContent = 'Загрузка… 0%';
+          try {
+            await uploadWithRetry(`/api/admin/cover?category=${cNum}&name=${encodeURIComponent(f.name)}`, f, (p) => { st.textContent = `Загрузка… ${p}%`; });
+            st.textContent = 'ГОТОВО ✓';
+            reload();
+          } catch (e) { st.textContent = (e.message || 'Ошибка загрузки') + ' · попробуйте ещё раз'; }
+        };
+        input.click();
+      });
+      body.querySelectorAll('.cvRemove').forEach(btn => btn.onclick = async () => {
+        if (!confirm('Убрать обложку этой номинации?')) return;
+        try { await api('/api/admin/cover/' + btn.dataset.cat, { method: 'DELETE', admin: true }); reload(); }
+        catch (e) { alert(e.message); }
+      });
     }
 
     // ---------- ФОТО УЧАСТНИКОВ (вкладка «ФОТО») ----------
@@ -629,15 +688,15 @@
         delete item.file; drawQueue();
       }
       uploading = false;
-      if (tab === 'videos') {
-        try { overview = await api('/api/admin/overview', { admin: true }); drawVideos(); } catch { /* ignore */ }
+      if (tab === 'videos' || tab === 'covers') {
+        try { overview = await api('/api/admin/overview', { admin: true }); draw(); } catch { /* ignore */ }
       }
     }
 
     function drawResults() {
       const total = overview.voters.reduce((n, v) => n + v.choices.length, 0);
       body.innerHTML = `
-        <div class="statRow"><div><b>${overview.voters.length}</b><small>ЗРИТЕЛЕЙ</small></div><div><b>${total}</b><small>ГОЛОСОВ ВСЕГО</small></div><div><b>${overview.videos.length}</b><small>НОМИНАНТОВ</small></div></div>
+        <div class="statRow"><div><b>${overview.voters.length}</b><small>ЗРИТЕЛЕЙ</small></div><div><b>${total}</b><small>ГОЛОСОВ ВСЕГО</small></div><div><b>${overview.videos.filter(v => v.category !== 'CV' && v.category !== 'PP').length}</b><small>НОМИНАНТОВ</small></div></div>
         <h2 class="subH">ПО НОМИНАЦИЯМ</h2>
         <div class="resultList">${categories.map(c => {
           const vids = overview.videos.filter(v => v.category === c.n).sort((a, b) => b.voters.length - a.voters.length);
