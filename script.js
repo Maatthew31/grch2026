@@ -104,8 +104,8 @@
     }
   }
   const fmtSize = (b) => b > 1e9 ? (b / 1e9).toFixed(2) + ' ГБ' : (b / 1e6).toFixed(1) + ' МБ';
-  const VIDEO_CATS = ['08', '10']; // «Откат года» и «Кружок года» — видео; остальные номинации — картинки номинантов
-  const isVideoCat = (n) => VIDEO_CATS.includes(n);
+  const VIDEO_CAT = '08'; // «Откат года» — ролики; остальные номинации — картинки номинантов
+  const isVideoCat = (n) => n === VIDEO_CAT;
 
   const esc = (value) => String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 
@@ -579,8 +579,6 @@
         try { return await xhrPut(url, file, (p) => onprogress && onprogress(p, a)); }
         catch (e) {
           lastErr = e;
-          // 4xx — осмысленный отказ сервера (формат/размер/доступ): повторять бессмысленно
-          if (/^ошибка сервера 4/.test(e.message || '')) throw e;
           if (a < attempts) await new Promise(r => setTimeout(r, 1500 * a)); // пауза перед повтором
         }
       }
@@ -596,10 +594,13 @@
 
     let uploading = false;
     function addFiles(files) {
-      // принимаем все файлы без фильтра по расширению: раньше «IMG_1234.JPG», HEIC-переименованные
-      // и файлы без расширения отбивались на клиенте — это и был «рандом». Реальный тип проверит
-      // сервер по содержимому файла и вернёт понятную ошибку, если что-то не то.
-      [...files].forEach(f => queue.push({ cat, file: f, name: f.name || 'файл', pct: 0, state: 'wait', attempt: 1 }));
+      const videoMode = isVideoCat(cat);
+      const ok = files.filter(f => videoMode
+        ? /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name)
+        : /\.(jpe?g|png|gif|webp)$/i.test(f.name));
+      const bad = files.filter(f => !ok.includes(f));
+      bad.forEach(f => queue.push({ cat, name: f.name, pct: 0, state: 'error', attempt: 1, error: videoMode ? 'только видео (MP4, WebM, MOV)' : 'только картинки (JPG, PNG, GIF, WEBP)' }));
+      ok.forEach(f => queue.push({ cat, file: f, name: f.name, pct: 0, state: 'wait', attempt: 1 }));
       drawQueue();
       runQueue();
     }
