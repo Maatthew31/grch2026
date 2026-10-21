@@ -97,6 +97,15 @@ app.get('/api/videos', async (req, res) => {
     ]);
     const byCat = {};
     for (const v of videos) (byCat[v.category] ||= []).push({ id: v.id, title: v.title, size: v.size, kind: v.kind, url: `/api/video/${v.id}` });
+    // сортировка по названию важна для фото номинантов («ИМЯ 4» → индекс 4),
+    // иначе порядок в списке «PP» зависит от порядка строк в БД и лица перепутаются.
+    // Числа сравниваем как числа: «ИМЯ 10» должен идти после «ИМЯ 9», а не после «ИМЯ 1».
+    Object.values(byCat).forEach(list => list.sort((a, b) => {
+      const na = Number((a.title.match(/(\d+)\s*$/) || [])[1]);
+      const nb = Number((b.title.match(/(\d+)\s*$/) || [])[1]);
+      if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+      return String(a.title).localeCompare(String(b.title), 'ru');
+    }));
     const myVotes = {};
     for (const vt of votes || []) {
       const vid = videos.find(v => v.id === vt.video_id);
@@ -123,19 +132,24 @@ async function fetchFile(url, rangeHeader) {
 
 // Стриминг файла из Supabase Storage напрямую в ответ (без загрузки всего ролика в память).
 // Экономит RAM на маленьком Render-сервисе и отдаёт видео быстрее.
+// Важно: 'error' на res убираем сразу после drain — иначе при десятках параллельных
+// стримов браузер копит error-слушателей и Node пишет MaxListenersExceededWarning.
 async function streamFile(res, signedUrl, headers, status) {
   const r = await fetch(signedUrl, { headers });
   if (!r.ok && r.status !== 206) throw new Error(`Supabase Storage ответил ${r.status}`);
   res.status(status);
   const reader = r.body.getReader();
+  // если зритель закрыл вкладку/перемотал — обрываем стрим без падения процесса
+  reqAbortOnClose?.(req, reader);
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!res.write(value)) {
         await new Promise((resolve, reject) => {
-          res.once('drain', resolve);
-          res.once('error', reject);
+          const onError = (err) => reject(err);
+          res.once('drain', () => { res.removeListener('error', onError); resolve(); });
+          res.once('error', onError);
         }).catch(() => { try { reader.cancel(); } catch {} return; });
       }
     }

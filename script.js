@@ -63,11 +63,20 @@
     if (body) headers['Content-Type'] = 'application/json';
     if (admin) headers['x-admin'] = store.admin || '';
     else if (store.voter) headers['x-voter'] = store.voter.token;
-    const r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    let r;
+    try {
+      r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    } catch {
+      throw new Error('Сервер не отвечает. Подождите 10–20 секунд и повторите — бесплатный Render «просыпается» после простоя.');
+    }
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) { const e = new Error(data.error || 'Ошибка запроса'); e.status = r.status; e.data = data; throw e; }
+    if (!r.ok) { const e = new Error(data.error || `Ошибка запроса (${r.status})`); e.status = r.status; e.data = data; throw e; }
     return data;
   }
+  // Глобальный перехват ошибок: если в обработчике клика что-то упало — показываем
+  // понятное сообщение, а не «тихий» чёрный/сломанный экран.
+  window.addEventListener('unhandledrejection', (e) => { console.error('[grechka]', e.reason); });
+  window.addEventListener('error', (e) => { console.error('[grechka]', e.message); });
   // Восстанавливаем загруженные из админки фото номинантов (видны всем посетителям)
   api('/api/videos', {}).then(d => {
     const pp = (d.videos && d.videos.PP) || [];
@@ -79,7 +88,10 @@
       const i = Number(m[1]) - 1;
       if (i >= 0 && i < participants.length && participants[i].img !== item.url) { participants[i].img = item.url; changed = true; }
     }
-    if (changed && scene === 'participants') render();
+    if (changed) {
+      localStorage.setItem('grechka_participants', JSON.stringify(participants));
+      if (scene === 'participants' || scene === 'admin') render();
+    }
   }).catch(() => {});
 
   async function loadVideos() {
@@ -105,9 +117,11 @@
         ${content}
       </main>`;
     document.getElementById('back')?.addEventListener('click', () => {
-      // кнопка «назад» делает ровно то же, что браузерная кнопка: шаг по истории сайта
-      if (history.state) history.back();
-      else navigate('intro', 'back');
+      // Кнопка «назад» = шаг по ИСТОРИИ САЙТА. Ходим по собственному стеку сцен,
+      // а не history.back(): так назад работает и внутри админки (#admin — одна
+      // история-запись), и не зависит от внешних hashchange-событий.
+      const prev = sceneStack.length > 1 ? sceneStack[sceneStack.length - 2] : 'intro';
+      goBack(prev);
     });
   }
 
@@ -116,31 +130,49 @@
   //  • браузерная кнопка «назад» возвращает на ПРЕДЫДУЩУЮ страницу сайта, а не на главную;
   //  • F5 остаётся на той же странице;
   //  • анимация сама понимает, вперёд идём или назад.
+  // sceneStack — собственный стек посещённых сцен: по нему ходит кнопка «←»
+  // (в том числе внутри админки, где история одна, и после прямых заходов по hash).
+  const sceneStack = [scene];
   let navToken = null;
   window.addEventListener('popstate', (e) => {
     const target = e.state && SCENES.includes(e.state.scene) ? e.state.scene : 'intro';
     if (target === scene) return;
     const back = !navToken || (SCENES.indexOf(target) < SCENES.indexOf(navToken));
     navToken = target;
+    // синхронизируем стек: если вернулись на уже посещённую сцену — срезаем хвост
+    const idx = sceneStack.lastIndexOf(target);
+    if (idx >= 0) sceneStack.length = idx + 1; else sceneStack.push(target);
     navigate(target, back ? 'back' : 'forward');
   });
   const pushHistory = (s) => {
     navToken = s;
     history.pushState({ scene: s }, '', sceneHash(s));
+    const idx = sceneStack.lastIndexOf(s);
+    if (idx >= 0) sceneStack.length = idx + 1; else sceneStack.push(s);
   };
+  function goBack(prev) {
+    const idx = sceneStack.lastIndexOf(prev);
+    if (idx >= 0) sceneStack.length = idx + 1;
+    // обновляем адрес без новой записи истории (запись уберёт popstate-обработчик ниже,
+    // если пользователь позже сам нажмёт браузерную «назад»)
+    navigate(prev, 'back');
+  }
 
   // Плавный переход: старая сцена уплывает, новая въезжает СРАЗУ поверх неё.
   // Анимация ставится на <main> целиком (вместе с фоном и шапкой) — так ничего не
   // «микрофризит» на полпути: анимируются только GPU-дешёвые transform/opacity.
+  // Защита от чёрного экрана: cleanup в finally + таймер-подстраховка + очистка
+  // всех лишних <main> перед каждым переходом.
   let animating = false;
   let navPromise = Promise.resolve();
   const EASE = 'cubic-bezier(.33,1,.68,1)';
   function animateOut(el, dir) {
+    el.style.pointerEvents = 'none';
     el.style.willChange = 'transform, opacity';
     return el.animate(
       [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${dir === 'back' ? 42 : -42}px)` }],
       { duration: 170, easing: EASE, fill: 'forwards' }
-    ).finished.then(() => { el.remove(); }).catch(() => { el.remove(); });
+    ).finally(() => { try { el.remove(); } catch {} });
   }
   function animateIn(el, dir) {
     el.classList.remove('sceneIn'); // анимируем только через WAAPI, без двойных эффектов
@@ -148,7 +180,7 @@
     return el.animate(
       [{ opacity: 0, transform: `translateX(${dir === 'back' ? -42 : 42}px)` }, { opacity: 1, transform: 'none' }],
       { duration: 320, delay: 90, easing: EASE, fill: 'both' }
-    ).finished.then(() => { el.style.willChange = ''; }).catch(() => {});
+    ).finally(() => { el.style.willChange = ''; });
   }
   async function navigate(next, dir = 'forward') {
     if (next === scene) return;
@@ -163,18 +195,27 @@
     render(); // рисует новый <main>; старый остаётся в DOM до cleanup
     const newEl = app.querySelector('main');
     window.scrollTo(0, 0);
+    // страховка: даже если анимация зависнет/выкинет исключение — через 600мс
+    // принудительно оставляем ровно один (новый) main, чтобы экран не почернел
+    const safety = setTimeout(() => {
+      app.querySelectorAll('main').forEach(m => { if (m !== newEl) m.remove(); });
+      animating = false;
+    }, 600);
     if (oldEl && newEl && oldEl !== newEl) {
       oldEl.style.position = 'fixed';
       oldEl.style.inset = '0';
       oldEl.style.zIndex = 5;
-      oldEl.style.overflow = 'hidden';
+      oldEl.style.pointerEvents = 'none';
       navPromise = Promise.all([animateOut(oldEl, dir), animateIn(newEl, dir)]);
     } else {
       navPromise = newEl ? animateIn(newEl, dir) : Promise.resolve();
     }
     try { await navPromise; } catch { /* ignore */ }
-    app.querySelectorAll('main').forEach(m => { if (m !== newEl) m.remove(); });
-    animating = false;
+    finally {
+      clearTimeout(safety);
+      app.querySelectorAll('main').forEach(m => { if (m !== newEl) m.remove(); });
+      animating = false;
+    }
   }
 
   function renderIntro() {
@@ -336,7 +377,7 @@
              <div class="videoMeta"><div><small>ВИДЕО №0${i + 1}</small><strong>${esc(v.title)}</strong></div><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`
           : `<div class="imageWrap"><img src="${esc(v.url)}" alt="${esc(v.title)}" loading="lazy" decoding="async"><span class="videoNum">0${i + 1}</span></div>
              <div class="imageCaption"><b>${esc(v.title)}</b><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`;
-        return `<article class="videoCard ${mine ? 'mine' : ''}">${media}</article>`;
+        return `<article class="videoCard ${videoMode ? 'videoCardV' : 'videoCardI'} ${mine ? 'mine' : ''}">${media}</article>`;
       }).join('');
       grid.querySelectorAll('.voteBtn:not([disabled])').forEach(btn => btn.onclick = async () => {
         const video = list.find(v => v.id === btn.dataset.vote);
@@ -405,6 +446,8 @@
     const reload = async () => {
       try { overview = await api('/api/admin/overview', { admin: true }); }
       catch (e) { if (e.status === 401) { store.admin = null; return adminLogin(); } }
+      // если пользователь за это время вышел из админки — не рисуем старьё
+      if (!store.admin || !document.getElementById('adminRoot') || root !== document.getElementById('adminRoot')) return;
       draw();
     };
 
@@ -529,6 +572,9 @@
               xhr.send(f);
             });
             participants[+btn.dataset.i].img = url;
+            // Сохраняем фото на СЕРВЕРЕ (в Supabase), чтобы его видели все посетители,
+            // а не только тот браузер, где его загрузили. localStorage — как страховка.
+            try { await api('/api/admin/participants', { method: 'PUT', admin: true, body: participants.map(p => ({ img: p.img })) }); } catch { /* ignore */ }
             localStorage.setItem('grechka_participants', JSON.stringify(participants));
             card.querySelector('img').src = url;
             st.textContent = 'ГОТОВО ✓';
@@ -659,10 +705,15 @@
     if (scene !== 'admin' && (!history.state || history.state.scene !== scene)) history.replaceState({ scene }, '', sceneHash(scene));
   }
 
-  // Ссылка «АДМИН» (#admin) — отдельный путь без записи в историю сайта
+  // Ссылка «АДМИН» (#admin) — отдельный путь без pushState. Админка живёт на том же
+  // URL, поэтому браузерная «назад» из неё уходит ровно туда, откуда пришли в сайт,
+  // а не на главную: hashchange-обработчик ниже это и делает.
   window.addEventListener('hashchange', () => {
     if (location.hash === '#admin' && scene !== 'admin') navigate('admin');
-    else if (location.hash !== '#admin' && scene === 'admin') navigate('intro', 'back');
+    else if (location.hash !== '#admin' && scene === 'admin') {
+      const prev = sceneStack.length > 1 ? sceneStack[sceneStack.length - 2] : 'intro';
+      navigate(prev, 'back');
+    }
   });
   if (location.hash === '#admin') scene = 'admin';
   render();

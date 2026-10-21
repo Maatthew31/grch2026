@@ -151,13 +151,15 @@ body{min-height:100%;overflow-x:hidden}
 .adminVideo img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;background:#0a0a0a}
 /* сетка картинок-номинантов (все номинации, кроме «Откат года») */
 .imageGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:20px}
-.imageWrap{position:relative;background:#050505;aspect-ratio:4/3;overflow:hidden}
+/* карточки — flex-колонки: картинка всегда точно по рамке, подпись снизу не прыгает */
+.videoCardI,.videoCardV{display:flex;flex-direction:column;min-width:0}
+.imageWrap{position:relative;background:#050505;aspect-ratio:4/3;overflow:hidden;flex-shrink:0;width:100%}
 .imageWrap img{width:100%;height:100%;object-fit:cover;display:block}
-.imageCaption{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-top:1px solid rgba(214,179,106,.14);flex-wrap:wrap}
+.imageCaption{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-top:1px solid rgba(214,179,106,.14);flex-wrap:wrap;flex-grow:1;min-height:74px}
 .imageCaption b{font:600 13px Manrope;letter-spacing:.14em;color:#eee6d7;text-transform:uppercase;word-break:break-word;min-width:0}
 .imageCaption .voteBtn{flex-shrink:0}
 @media(max-width:900px){.imageGrid{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}}
-@media(max-width:600px){.imageGrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.imageCaption{padding:10px;gap:8px}.imageCaption b{font-size:11px;letter-spacing:.08em}.videoMeta{padding:12px}.videoMeta strong{font-size:12px}}
+@media(max-width:600px){.imageGrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.imageCaption{padding:10px;gap:8px;min-height:64px}.imageCaption b{font-size:11px;letter-spacing:.08em}.videoMeta{padding:12px}.videoMeta strong{font-size:12px}}
 .avInfo{padding:14px 16px 6px;display:flex;flex-direction:column;gap:4px}.avInfo strong{font-weight:600;font-size:14px;word-break:break-word}.avInfo small{color:#8d877b;font-size:11px}
 .avActions{display:flex;gap:8px;padding:10px 16px 16px}
 .avActions button{height:34px;padding:0 12px;background:transparent;border:1px solid rgba(214,179,106,.3);color:#bfa86e;font:700 8px Manrope;letter-spacing:.16em;cursor:pointer;transition:.2s}
@@ -173,6 +175,21 @@ body{min-height:100%;overflow-x:hidden}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.chips span{padding:4px 10px;border:1px solid rgba(214,179,106,.28);font-size:11px;color:#d9ceb0;background:rgba(214,179,106,.06)}.chips small{color:#6f6a5c;font-size:11px}
 .voterTable{display:flex;flex-direction:column;border:1px solid rgba(214,179,106,.14)}
 .voterRow{display:grid;grid-template-columns:200px minmax(0,1fr);gap:20px;padding:16px 20px;border-bottom:1px solid rgba(255,255,255,.06)}.voterRow:last-child{border-bottom:0}
+
+/* крестик удаления голоса в таблице «КТО ЧТО ВЫБРАЛ» */
+.chipDel{width:22px;height:22px;line-height:1;margin-left:8px;padding:0;border:1px solid rgba(228,128,111,.45);border-radius:50%;background:transparent;color:#e4806f;font:700 13px Manrope;cursor:pointer;transition:.2s;display:inline-grid;place-items:center}
+.chipDel:hover{background:rgba(228,128,111,.18);color:#ffb9ab;border-color:#e4806f}
+
+/* вкладка ФОТО в админке — загрузка портретов номинантов */
+.adminHint{color:#8d877b;font-size:12px;line-height:1.7;margin:-8px 0 22px;max-width:640px}
+.peopleAdminGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px}
+.paCard{border:1px solid rgba(214,179,106,.16);background:rgba(15,13,10,.7);padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.paImg{aspect-ratio:3/4;background:#15130f;overflow:hidden}
+.paImg img{width:100%;height:100%;object-fit:cover;display:block}
+.paCard b{font:600 11px Manrope;letter-spacing:.18em;text-align:center;color:#eee6d7}
+.paCard .ghostBtn{height:38px;width:100%;justify-content:center;font-size:8px}
+.paStatus{min-height:16px;font-size:10px;letter-spacing:.06em;color:#9fcf9a;text-align:center}
+@media(max-width:600px){.peopleAdminGrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.paCard{padding:10px}}
 .vName{display:flex;flex-direction:column;gap:3px}.vName small{color:#8d877b;font-size:10px;letter-spacing:.12em}
 .vChoices{display:flex;flex-wrap:wrap;gap:6px 8px}.vChoices span{font-size:11px;color:#b7b2a6;padding:4px 10px;background:rgba(255,255,255,.04)}.vChoices em{font-style:normal;color:#7a7360;margin-right:4px}.vChoices b{color:var(--gold2);font-weight:600}.vChoices small{color:#6f6a5c}
 @media(max-width:900px){.adminCols{grid-template-columns:1fr}.adminCats{position:static;max-height:260px;overflow:auto}.voterRow{grid-template-columns:1fr}.resultList{grid-template-columns:1fr}}
