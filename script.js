@@ -95,6 +95,9 @@
     }
   }).catch(() => {});
 
+  // обложка: { url, w, h } (старый формат — просто строка url, считаем 16:9)
+  const coverDims = (c) => typeof c === 'string' ? { url: c, w: 16, h: 9 } : (c || null);
+
   async function loadVideos() {
     try {
       const d = await api('/api/videos');
@@ -251,8 +254,12 @@
     // Обложка 16:9 фоном кнопки + затемняющий градиент, чтобы текст читался всегда.
     const rows = categories.map(c => {
       const done = !!myVotes[c.n];
-      const cover = coversByCat[c.n];
-      return `<button class="categoryRow ${selected.n === c.n ? 'active' : ''} ${done ? 'done' : ''} ${cover ? 'hasCover' : ''}" data-category="${c.n}" style="${cover ? `--cover:url('${esc(cover)}')` : ''}"><span class="crNum">${c.n}</span><strong>${esc(c.title)}</strong><i>${done ? '✓' : '↗'}</i></button>`;
+      const cv = coverDims(coversByCat[c.n]);
+      // высота кнопки = ширина списка × пропорции загруженной картинки (обрезаны minmax),
+      // т.е. размер кнопок автоматически подстраивается под размер обложки
+      const ratio = cv && cv.w > 0 && cv.h > 0 ? cv.w / cv.h : 16 / 9;
+      const vars = cv ? `--cover:url('${esc(cv.url)}');--rowH:clamp(74px,calc(100% * ${ratio.toFixed(4)}),260px)` : '';
+      return `<button class="categoryRow ${selected.n === c.n ? 'active' : ''} ${done ? 'done' : ''} ${cv ? 'hasCover' : ''}" data-category="${c.n}" style="${vars}"><span class="crNum">${c.n}</span><strong>${esc(c.title)}</strong><i>${done ? '✓' : '↗'}</i></button>`;
     }).join('');
     const doneCount = Object.keys(myVotes).length;
     shell(`
@@ -267,9 +274,9 @@
     const updateFeatureCover = () => {
       const cf = document.getElementById('cfCover');
       if (!cf) return;
-      const url = coversByCat[selected.n];
-      cf.style.backgroundImage = url ? `url('${url}')` : '';
-      cf.classList.toggle('on', !!url);
+      const cv = coverDims(coversByCat[selected.n]);
+      cf.style.backgroundImage = cv ? `url('${cv.url}')` : '';
+      cf.classList.toggle('on', !!cv);
     };
     updateFeatureCover();
 
@@ -426,7 +433,16 @@
     const body = document.getElementById('adminBody');
 
     const reload = async () => {
-      try { overview = await api('/api/admin/overview', { admin: true }); }
+      try {
+        overview = await api('/api/admin/overview', { admin: true });
+        // «01 1280x720» в title обложки — служебные размеры, оставляем только номер номинации
+        for (const v of overview.videos) {
+          if (v.category === 'CV') {
+            const m = String(v.title).match(/^(\d{2})(?: \d+x\d+)?$/);
+            v.title = m ? m[1] : v.title;
+          }
+        }
+      }
       catch (e) { if (e.status === 401) { store.admin = null; return adminLogin(); } }
       // если пользователь за это время вышел из админки — не рисуем старьё
       if (!store.admin || !document.getElementById('adminRoot') || root !== document.getElementById('adminRoot')) return;
@@ -521,8 +537,8 @@
           <div class="coverGrid">${categories.map(c => {
             const cv = coverOf(c.n);
             return `<div class="cvCard" data-cat="${c.n}">
-              <div class="cvImg ${cv ? 'on' : ''}">${cv ? `<img src="${esc(cv.url)}" alt="" loading="lazy">` : '<small>без обложки</small>'}</div>
-              <b>${c.n} · ${esc(c.title)}</b>
+              <div class="cvImg ${cv ? 'on' : ''}" style="${cv ? `aspect-ratio:${cv.w}/${cv.h}` : ''}">${cv ? `<img src="${esc(cv.url)}" alt="" loading="lazy">` : '<small>без обложки</small>'}</div>
+              <b>${c.n} · ${esc(c.title)}</b>${cv ? `<small class="cvDims">${cv.w}×${cv.h} px · кнопки подстроятся автоматически</small>` : ''}
               <div class="cvActions"><button class="ghostBtn cvUpload" data-cat="${c.n}">${cv ? 'ЗАМЕНИТЬ' : 'ЗАГРУЗИТЬ'}</button>${cv ? `<button class="ghostBtn danger cvRemove" data-cat="${c.n}">УБРАТЬ</button>` : ''}</div>
               <input type="file" accept="image/*" hidden data-cat="${c.n}">
               <div class="paStatus"></div>
@@ -539,7 +555,9 @@
           if (f.size > 8 * 1024 * 1024) { st.textContent = 'Максимум 8 МБ'; return; }
           st.textContent = 'Загрузка… 0%';
           try {
-            await uploadWithRetry(`/api/admin/cover?category=${cNum}&name=${encodeURIComponent(f.name)}`, f, (p) => { st.textContent = `Загрузка… ${p}%`; });
+            const res = await uploadWithRetry(`/api/admin/cover?category=${cNum}&name=${encodeURIComponent(f.name)}`, f, (p) => { st.textContent = `Загрузка… ${p}%`; });
+            // обновляем общественный кэш обложек сразу — размеры кнопок поменяются без перезагрузки
+            if (res && res.url) coversByCat[cNum] = { url: res.url, w: res.width || 16, h: res.height || 9 };
             st.textContent = 'ГОТОВО ✓';
             reload();
           } catch (e) { st.textContent = (e.message || 'Ошибка загрузки') + ' · попробуйте ещё раз'; }
@@ -548,7 +566,7 @@
       });
       body.querySelectorAll('.cvRemove').forEach(btn => btn.onclick = async () => {
         if (!confirm('Убрать обложку этой номинации?')) return;
-        try { await api('/api/admin/cover/' + btn.dataset.cat, { method: 'DELETE', admin: true }); reload(); }
+        try { delete coversByCat[btn.dataset.cat]; await api('/api/admin/cover/' + btn.dataset.cat, { method: 'DELETE', admin: true }); reload(); }
         catch (e) { alert(e.message); }
       });
     }
@@ -622,7 +640,7 @@
         xhr.timeout = 600000; // 10 минут на крупные видео
         xhr.upload.onprogress = (e) => { if (onprogress && e.lengthComputable) onprogress(Math.round(e.loaded / e.total * 100)); };
         xhr.onload = () => {
-          if (xhr.status === 200) return resolve();
+          if (xhr.status === 200) { let d = null; try { d = JSON.parse(xhr.responseText); } catch { /* ignore */ } return resolve(d); }
           let msg = ''; try { msg = JSON.parse(xhr.responseText).error; } catch { /* ignore */ }
           reject(new Error(msg || ('ошибка сервера ' + xhr.status)));
         };

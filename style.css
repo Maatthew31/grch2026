@@ -199,7 +199,7 @@ body{min-height:100%;overflow-x:hidden}
 @media(max-width:900px){.adminCols{grid-template-columns:1fr}.adminCats{position:static;max-height:260px;overflow:auto}.voterRow{grid-template-columns:1fr}.resultList{grid-template-columns:1fr}}
 
 /* ===== Обложки номинаций 16:9 (фон кнопок в списке категорий) ===== */
-.categoryRow{position:relative;isolation:isolate;overflow:hidden}
+.categoryRow{position:relative;isolation:isolate;overflow:hidden;height:var(--rowH,auto)}
 .categoryRow .crNum,.categoryRow strong,.categoryRow i{position:relative;z-index:2}
 .categoryRow:before{content:"";position:absolute;inset:-2px;z-index:0;background-image:var(--cover,none);background-size:cover;background-position:center 40%;opacity:0;transform:scale(1.03);transition:opacity .5s ease,transform .8s cubic-bezier(.16,1,.3,1),filter .5s ease;filter:grayscale(.7) brightness(.55)}
 .categoryRow:after{content:"";position:absolute;inset:0;z-index:1;background:linear-gradient(90deg,rgba(6,6,6,.92) 0%,rgba(6,6,6,.72) 38%,rgba(6,6,6,.28) 75%,rgba(6,6,6,.45) 100%);opacity:0;transition:opacity .5s ease}
@@ -223,6 +223,7 @@ body{min-height:100%;overflow-x:hidden}
 .cvImg{aspect-ratio:16/9;display:grid;place-items:center;overflow:hidden;border:1px dashed rgba(214,179,106,.3);background:radial-gradient(circle at 50% 45%,rgba(214,179,106,.08),transparent 60%),#0a0a0a}
 .cvImg.on{border-style:solid}
 .cvImg img{width:100%;height:100%;object-fit:cover;display:block}
+.cvDims{display:block;color:#8a9b7c;font-size:10px;letter-spacing:.06em;text-align:center}
 .cvImg small{color:#6f6a5c;font-size:11px;letter-spacing:.1em}
 .cvCard>b{font-size:12px;letter-spacing:.08em;color:#e8e0d2;word-break:break-word}
 .cvActions{display:flex;gap:8px}
