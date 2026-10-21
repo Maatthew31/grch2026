@@ -27,9 +27,18 @@
   ].map(([n,title,desc]) => ({n,title,desc}));
 
   const app = document.getElementById('app');
-  let scene = 'intro';
-  let selected = categories[0];
+  // Восстановление сцены после перезагрузки страницы: адрес вида #scene/номер_номинации
+  const SCENES = ['intro', 'login', 'participants', 'categories', 'categoryDetail'];
+  const parseHash = () => {
+    const [h, s, n] = location.hash.split('/');
+    if (h !== '#admin' || !s) return {};
+    return { scene: SCENES.includes(s) ? s : null, cat: /^\d{2}$/.test(n || '') ? n : null };
+  };
+  const restored = parseHash();
+  let scene = restored.scene || 'intro';
+  let selected = categories.find(c => c.n === restored.cat) || categories[0];
   let direction = 'forward';
+  const sceneHash = (s) => '#admin/' + s + (s === 'categoryDetail' ? '/' + selected.n : '');
 
   const store = {
     get voter() { try { return JSON.parse(localStorage.getItem('grechka_voter')); } catch { return null; } },
@@ -68,10 +77,9 @@
   function shell(content, label) {
     app.innerHTML = `
       <main class="app ${scene} ${direction === 'back' ? 'backScene' : ''}">
-        <div class="background"><div class="light l1"></div><div class="light l2"></div><div class="light l3"></div><div class="vignette"></div></div>
-        <header class="topbar"><span>ГРЕЧКА <b>2026</b></span><i></i><small>${label}</small></header>
+        <div class="background"><div class="light l1"></div><div class="light l2"></div><div class="vignette"></div></div>
+        <header class="topbar">${scene !== 'intro' ? '<button class="back" id="back" aria-label="Назад">←</button>' : ''}<span>ГРЕЧКА <b>2026</b></span><i></i><small>${label}</small></header>
         ${content}
-        ${scene !== 'intro' ? '<button class="back" id="back" aria-label="Назад">←</button>' : ''}
       </main>`;
     document.getElementById('back')?.addEventListener('click', () => {
       const prev = { login:'intro', participants:'intro', categories:'participants', categoryDetail:'categories', admin:'intro' }[scene] || 'intro';
@@ -80,11 +88,46 @@
     });
   }
 
-  function navigate(next, dir='forward') {
+  // Плавный переход: старая сцена уплывает, новая въезжает СРАЗУ поверх неё
+  // (position:absolute на время анимации) — без пауз и «лагающих» рывков.
+  let animating = false;
+  const EASE = 'cubic-bezier(.33,1,.68,1)';
+  function animateOut(el, dir) {
+    el.style.willChange = 'transform, opacity';
+    return el.animate(
+      [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${dir === 'back' ? 34 : -34}px)` }],
+      { duration: 170, easing: EASE, fill: 'forwards' }
+    ).finished.then(() => { el.remove(); }).catch(() => { el.remove(); });
+  }
+  function animateIn(el, dir) {
+    el.classList.remove('sceneIn'); // анимируем только через WAAPI, без двойных эффектов
+    el.style.willChange = 'transform, opacity';
+    return el.animate(
+      [{ opacity: 0, transform: `translateX(${dir === 'back' ? -34 : 34}px)` }, { opacity: 1, transform: 'none' }],
+      { duration: 320, delay: 90, easing: EASE, fill: 'both' }
+    ).finished.then(() => { el.style.willChange = ''; }).catch(() => {});
+  }
+  async function navigate(next, dir = 'forward') {
+    if (animating || next === scene) return;
+    animating = true;
+    const oldEl = app.querySelector('section');
     direction = dir;
-    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
-    app.classList.add('pageLeaving');
-    setTimeout(() => { scene = next; render(); window.scrollTo(0, 0); }, 220);
+    scene = next;
+    window.scrollTo(0, 0);
+    render();
+    const newEl = app.querySelector('section');
+    if (oldEl && newEl && oldEl !== newEl) {
+      // Старая сцена остаётся видимой поверх новой только на время анимации
+      const r = newEl.getBoundingClientRect();
+      oldEl.style.position = 'absolute';
+      oldEl.style.top = r.top + window.scrollY + 'px';
+      oldEl.style.left = 0; oldEl.style.right = 0;
+      oldEl.style.zIndex = 5;
+      await Promise.all([animateOut(oldEl, dir), animateIn(newEl, dir)]);
+    } else if (newEl) {
+      await animateIn(newEl, dir);
+    }
+    animating = false;
   }
 
   function renderIntro() {
@@ -463,18 +506,20 @@
   }
 
   function render() {
-    app.classList.remove('pageLeaving');
     if (scene === 'intro') renderIntro();
     if (scene === 'login') renderLogin();
     if (scene === 'participants') renderParticipants();
     if (scene === 'categories') renderCategories();
     if (scene === 'categoryDetail') renderCategoryDetail();
     if (scene === 'admin') renderAdmin();
+    // Запоминаем текущую страницу в адресе, чтобы F5 не выбрасывал на главную
+    if (scene !== 'admin') history.replaceState(null, '', sceneHash(scene));
   }
 
+  const isAdminHash = () => location.hash === '#admin' || location.hash.startsWith('#admin/');
   window.addEventListener('hashchange', () => {
-    if (location.hash === '#admin' && scene !== 'admin') navigate('admin');
-    else if (location.hash !== '#admin' && scene === 'admin') navigate('intro', 'back');
+    if (!isAdminHash() && scene !== 'intro') navigate('intro', 'back');
+    else if (isAdminHash() && scene === 'intro') navigate('admin');
   });
   if (location.hash === '#admin') scene = 'admin';
   render();

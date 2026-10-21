@@ -26,7 +26,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static(__dirname, { index: 'index.html' }));
+app.use(express.static(__dirname, { index: 'index.html', maxAge: '1h' }));
 
 // ---------- helpers ----------
 const uid = () => crypto.randomUUID();
