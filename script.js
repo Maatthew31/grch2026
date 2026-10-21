@@ -103,9 +103,44 @@
       const d = await api('/api/videos');
       videosByCat = d.videos; myVotes = d.myVotes; coversByCat = d.covers || {};
     } catch (e) {
-      if (e.status === 401) { store.voter = null; navigate('login'); }
-      throw e;
+      if (e.status === 401) { store.voter = null; navigate('login'); throw e; }
+      // Сервер недоступен (сайт открыт как статика с GitHub Pages).
+      // Голосовать нельзя, но обложки номинаций можно показать — тянем их
+      // напрямую из Supabase (картинки по-прежнему хранятся на БД).
+      videosByCat = {}; myVotes = {};
+      await loadCoversFromSupabaseDirect();
     }
+  }
+
+  // ---------- ОБЛОЖКИ ПРЯМО ИЗ SUPABASE (режим без Node-сервера) ----------
+  // Если сайт открыт как чистая статика (GitHub Pages) и /api недоступен,
+  // обложки читаются напрямую из Supabase: список — из таблицы videos
+  // (category='CV'), сами картинки — из публичного bucket 'covers'.
+  // Ключи (URL проекта + service_role/anon) сохраняются в localStorage
+  // в админке (вкладка «ОБЛОЖКИ» → «Режим GitHub Pages») или на covers.html.
+  function sbCfg() {
+    try { return JSON.parse(localStorage.getItem('grechka_sb') || 'null'); } catch { return null; }
+  }
+  const sbBase = (u) => String(u || '').trim().replace(/\/+$/, '');
+  async function loadCoversFromSupabaseDirect() {
+    const cfg = sbCfg();
+    if (!cfg || !sbBase(cfg.u) || !String(cfg.k || '').trim()) return; // ключей нет — номинации без обложек
+    const base = sbBase(cfg.u), key = String(cfg.k).trim();
+    let rows = [];
+    try {
+      const r = await fetch(`${base}/rest/v1/videos?select=id,title,path,size,created_at&category=eq.CV&order=created_at.asc`,
+        { headers: { apikey: key, Authorization: 'Bearer ' + key } });
+      if (!r.ok) return;
+      rows = await r.json();
+    } catch { return; }
+    const out = {};
+    for (const v of rows) { // строки по created_at.asc — последние перезаписывают старые
+      const m = String(v.title || '').match(/^(\d{2})(?:\s+(\d+)x(\d+))?$/);
+      if (!m) continue;
+      const path = String(v.path || '').split('/').map(encodeURIComponent).join('/');
+      out[m[1]] = { url: `${base}/storage/v1/object/public/covers/${path}`, w: +(m[2] || 16), h: +(m[3] || 9) };
+    }
+    coversByCat = out;
   }
   const fmtSize = (b) => b > 1e9 ? (b / 1e9).toFixed(2) + ' ГБ' : (b / 1e6).toFixed(1) + ' МБ';
   const VIDEO_CATS = ['08', '10']; // «Откат года» и «Кружок года» — ролики; остальные номинации — картинки номинантов
@@ -392,17 +427,28 @@
     adminDashboard();
   }
 
+  // Админка работает в двух режимах:
+  //  • с server.js (локально или на хостинге) — вход по паролю, загрузка через /api;
+  //  • без сервера (чистый GitHub Pages) — вход по ключу Supabase, загрузка напрямую в БД.
   function adminLogin() {
     const root = document.getElementById('adminRoot');
+    const cfg0 = sbCfg();
+    const direct0 = !!(cfg0 && sbBase(cfg0.u) && String(cfg0.k || '').trim());
     root.innerHTML = `
       <div class="login">
         <div class="heroKicker">ТОЛЬКО ДЛЯ ОРГАНИЗАТОРОВ</div>
         <h1 class="loginTitle">ВХОД<br><em>В АДМИНКУ</em></h1>
         <div class="loginForm">
-          <input id="adminPass" type="password" class="textInput" placeholder="Пароль" autocomplete="current-password">
+          <input id="adminPass" type="password" class="textInput" placeholder="${direct0 ? 'Пароль или «включить режим GitHub Pages»' : 'Пароль'}" autocomplete="current-password">
           <button class="luxButton" id="adminGo"><span>ВОЙТИ</span><b>→</b></button>
         </div>
         <div class="formError" id="adminError"></div>
+        <p class="adminHint loginHint">Нет доступа к серверу? Укажите ниже URL проекта и ключ Supabase — админка будет грузить обложки напрямую в базу, без Node-сервера.</p>
+        <div class="sbBar inline">
+          <label>SUPABASE URL<input type="text" id="sbUrlL" placeholder="https://xxxxxxxx.supabase.co" value="${esc(cfg0?.u || '')}"></label>
+          <label>SERVICE_ROLE / ANON KEY<input type="password" id="sbKeyL" placeholder="eyJhbGciOi..." value="${esc(cfg0?.k || '')}"></label>
+          <button class="ghostBtn" id="sbSaveL">РЕЖИМ GITHUB PAGES</button>
+        </div>
       </div>`;
     const input = document.getElementById('adminPass');
     const go = async () => {
@@ -414,25 +460,42 @@
     };
     document.getElementById('adminGo').onclick = go;
     input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+    document.getElementById('sbSaveL').onclick = () => {
+      const u = sbBase(document.getElementById('sbUrlL').value), k = String(document.getElementById('sbKeyL').value || '').trim();
+      if (!u.startsWith('http') || k.length < 20) return alert('Заполните оба поля: URL проекта и ключ');
+      localStorage.setItem('grechka_sb', JSON.stringify({ u, k }));
+      store.admin = 'direct'; // вход без пароля: дальше работаем только с Supabase
+      adminDashboard();
+    };
+    if (direct0) { store.admin = 'direct'; return adminDashboard(); } // ключи уже сохранены — сразу в дашборд
     input.focus();
   }
 
   function adminDashboard() {
     const root = document.getElementById('adminRoot');
-    let tab = 'videos';
+    const cfgD = sbCfg();
+    const directAdmin = store.admin === 'direct' || !!(cfgD && sbBase(cfgD.u) && String(cfgD.k || '').trim());
+    let tab = directAdmin ? 'covers' : 'videos';
     let cat = categories[0].n;
     let overview = { videos: [], voters: [] };
     const queue = []; // { id, name, pct, state, error }
 
     root.innerHTML = `
       <div class="adminHead">
-        <div><div class="heroKicker">ГРЕЧКА 2026</div><h1>АДМИНКА</h1></div>
-        <div class="adminTabs"><button data-tab="videos" class="on">НОМИНАЦИИ</button><button data-tab="covers">ОБЛОЖКИ</button><button data-tab="people">ФОТО</button><button data-tab="results">ВЫБОР ЛЮДЕЙ</button><button data-tab="out">ВЫЙТИ</button></div>
+        <div><div class="heroKicker">ГРЕЧКА 2026${directAdmin ? ' · РЕЖИМ GITHUB PAGES' : ''}</div><h1>АДМИНКА</h1></div>
+        <div class="adminTabs"><button data-tab="covers" class="${tab === 'covers' ? 'on' : ''}">ОБЛОЖКИ</button>${directAdmin ? '' : '<button data-tab="videos" class="' + (tab === 'videos' ? 'on' : '') + '">НОМИНАЦИИ</button><button data-tab="people">ФОТО</button><button data-tab="results">ВЫБОР ЛЮДЕЙ</button>'}<button data-tab="out">ВЫЙТИ</button></div>
       </div>
       <div id="adminBody"></div>`;
     const body = document.getElementById('adminBody');
 
     const reload = async () => {
+      // режим GitHub Pages (ключи Supabase сохранены): сервер не нужен —
+      // обновляем кэш обложек напрямую из БД и перерисовываем активную вкладку
+      if (directAdmin) {
+        await loadCoversFromSupabaseDirect().catch(() => {});
+        drawCovers();
+        return;
+      }
       try {
         overview = await api('/api/admin/overview', { admin: true });
         // «01 1280x720» в title обложки — служебные размеры, оставляем только номер номинации
@@ -529,22 +592,111 @@
 
     // ---------- ОБЛОЖКИ НОМИНАЦИЙ (вкладка «ОБЛОЖКИ») ----------
     // Картинка 16:9, которая ставится фоном кнопки номинации на странице «НОМИНАЦИИ».
+    // ---- загрузка обложек напрямую в Supabase (для сайта без Node-сервера) ----
+    async function sbDirect(path, opts = {}, cfg) {
+      const r = await fetch(sbBase(cfg.u) + path, {
+        ...opts,
+        headers: { apikey: cfg.k, Authorization: 'Bearer ' + cfg.k,
+                   ...(opts.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+                   ...(opts.headers || {}) }
+      });
+      if (!r.ok) throw new Error((await r.text().catch(() => '')).slice(0, 160) || ('HTTP ' + r.status));
+      const ct = r.headers.get('content-type') || '';
+      return ct.includes('json') ? r.json() : r.arrayBuffer();
+    }
+    async function directCoverList(cfg) {
+      const rows = await sbDirect('/rest/v1/videos?select=id,title,path,size,created_at&category=eq.CV&order=created_at.asc', {}, cfg);
+      const map = {};
+      for (const v of Array.isArray(rows) ? rows : []) {
+        const m = String(v.title || '').match(/^(\d{2})(?:\s+(\d+)x(\d+))?$/);
+        if (!m) continue;
+        const path = String(v.path || '').split('/').map(encodeURIComponent).join('/');
+        map[m[1]] = { id: v.id, path: v.path, url: `${sbBase(cfg.u)}/storage/v1/object/public/covers/${path}`, w: +(m[2] || 16), h: +(m[3] || 9) };
+      }
+      return map;
+    }
+    async function directCoverUpload(cfg, cNum, file, onProgress) {
+      const ext = (file.name.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || 'jpg';
+      const dims = await new Promise((res) => {
+        const img = new Image();
+        img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight });
+        img.onerror = () => res(null);
+        img.src = URL.createObjectURL(file);
+      }).finally(() => {});
+      const path = `covers/${cNum}/${Date.now()}.${ext}`;
+      const old = await directCoverList(cfg);
+      const form = new FormData();
+      form.append('cacheControl', '3600');
+      form.append('file', file, file.name);
+      await sbDirect(`/storage/v1/object/covers/${path.split('/').map(encodeURIComponent).join('/')}`, { method: 'POST', body: form }, cfg);
+      await sbDirect('/rest/v1/videos', { method: 'POST', headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({ category: 'CV', kind: 'image', title: dims ? `${cNum} ${dims.w}x${dims.h}` : cNum, path, size: file.size }) }, cfg);
+      if (old[cNum]) { // одна обложка на номинацию — старую убираем
+        await sbDirect(`/storage/v1/object/covers/${String(old[cNum].path).split('/').map(encodeURIComponent).join('/')}`, { method: 'DELETE' }, cfg).catch(() => {});
+        await sbDirect(`/rest/v1/videos?id=eq.${old[cNum].id}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } }, cfg).catch(() => {});
+      }
+      void onProgress;
+      return { width: dims?.w || 16, height: dims?.h || 9 };
+    }
+    async function directCoverRemove(cfg, cNum) {
+      const cur = await directCoverList(cfg);
+      const row = cur[cNum];
+      if (!row) return;
+      await sbDirect(`/storage/v1/object/covers/${String(row.path).split('/').map(encodeURIComponent).join('/')}`, { method: 'DELETE' }, cfg).catch(() => {});
+      await sbDirect(`/rest/v1/videos?id=eq.${row.id}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } }, cfg);
+    }
+
+    function coverCardHtml(c, cv) {
+      return `<div class="cvCard" data-cat="${c.n}">
+        <div class="cvImg ${cv ? 'on' : ''}" style="${cv ? `aspect-ratio:${cv.w}/${cv.h}` : ''}">${cv ? `<img src="${esc(cv.url)}" alt="" loading="lazy">` : '<small>без обложки</small>'}</div>
+        <b>${c.n} · ${esc(c.title)}</b>${cv ? `<small class="cvDims">${cv.w}×${cv.h} px · кнопки подстроятся автоматически</small>` : ''}
+        <div class="cvActions"><button class="ghostBtn cvUpload" data-cat="${c.n}">${cv ? 'ЗАМЕНИТЬ' : 'ЗАГРУЗИТЬ'}</button>${cv ? `<button class="ghostBtn danger cvRemove" data-cat="${c.n}">УБРАТЬ</button>` : ''}</div>
+        <input type="file" accept="image/*" hidden data-cat="${c.n}">
+        <div class="paStatus"></div>
+      </div>`;
+    }
+
     function drawCovers() {
+      const cfg = sbCfg();
+      const directMode = !!(cfg && sbBase(cfg.u) && String(cfg.k || '').trim());
       body.innerHTML = `
         <div class="adminMain">
           <h2>Обложки номинаций</h2>
-          <p class="adminHint">Картинка 16:9 станет фоном кнопки номинации на странице «НОМИНАЦИИ» у всех посетителей. Рекомендуем ~1280×720, JPG/WEBG до 8 МБ. Текст поверх обложки затемняется градиентом — картинку лучше выбирать спокойной по центру.</p>
-          <div class="coverGrid">${categories.map(c => {
-            const cv = coverOf(c.n);
-            return `<div class="cvCard" data-cat="${c.n}">
-              <div class="cvImg ${cv ? 'on' : ''}" style="${cv ? `aspect-ratio:${cv.w}/${cv.h}` : ''}">${cv ? `<img src="${esc(cv.url)}" alt="" loading="lazy">` : '<small>без обложки</small>'}</div>
-              <b>${c.n} · ${esc(c.title)}</b>${cv ? `<small class="cvDims">${cv.w}×${cv.h} px · кнопки подстроятся автоматически</small>` : ''}
-              <div class="cvActions"><button class="ghostBtn cvUpload" data-cat="${c.n}">${cv ? 'ЗАМЕНИТЬ' : 'ЗАГРУЗИТЬ'}</button>${cv ? `<button class="ghostBtn danger cvRemove" data-cat="${c.n}">УБРАТЬ</button>` : ''}</div>
-              <input type="file" accept="image/*" hidden data-cat="${c.n}">
-              <div class="paStatus"></div>
-            </div>`;
-          }).join('')}</div>
+          <p class="adminHint">Картинка 16:9 станет фоном кнопки номинации на странице «НОМИНАЦИИ» у всех посетителей. Рекомендуем ~1280×720, JPG/PNG/WEBP до 8 МБ. Текст поверх обложки затемняется градиентом — картинку лучше выбирать спокойной по центру. Картинки хранятся в базе (Supabase Storage + таблица videos) и подгружаются оттуда у всех.</p>
+          <div class="sbBar">
+            <label>SUPABASE URL<input type="text" id="sbUrl" placeholder="https://xxxxxxxx.supabase.co" value="${esc(cfg?.u || '')}"></label>
+            <label>SERVICE_ROLE / ANON KEY<input type="password" id="sbKey" placeholder="eyJhbGciOi..." value="${esc(cfg?.k || '')}"></label>
+            <button class="ghostBtn" id="sbSave">СОХРАНИТЬ КЛЮЧИ</button>
+            <span class="sbMode">${directMode ? 'режим GitHub Pages: загрузка идёт напрямую в Supabase ✓' : 'загрузка через server.js (локально / Render)'}</span>
+          </div>
+          <div class="coverGrid">${categories.map(c => coverCardHtml(c, directMode ? null : coverOf(c.n))).join('')}</div>
         </div>`;
+
+      document.getElementById('sbSave').onclick = () => {
+        const u = sbBase(document.getElementById('sbUrl').value), k = String(document.getElementById('sbKey').value || '').trim();
+        if (!u.startsWith('http') || k.length < 20) return alert('Заполните оба поля: URL проекта и ключ');
+        localStorage.setItem('grechka_sb', JSON.stringify({ u, k }));
+        document.querySelector('.sbMode').textContent = 'сохранено ✓ перезагружаю…';
+        loadCoversFromSupabaseDirect().then(() => drawCovers());
+      };
+
+      bindCoverButtons();
+      if (directMode) { // список обложек тянем из самой БД
+        directCoverList(cfg).then((map) => {
+          categories.forEach(c => {
+            const card = body.querySelector(`.cvCard[data-cat="${c.n}"]`);
+            if (!card) return;
+            const cv = map[c.n];
+            card.outerHTML = coverCardHtml(c, cv);
+          });
+          bindCoverButtons();
+        }).catch(() => {});
+      }
+    }
+
+    function bindCoverButtons() {
+      const cfg = sbCfg();
+      const directMode = !!(cfg && sbBase(cfg.u) && String(cfg.k || '').trim());
       body.querySelectorAll('.cvUpload').forEach(btn => btn.onclick = () => {
         const cNum = btn.dataset.cat;
         const card = body.querySelector(`.cvCard[data-cat="${cNum}"]`);
@@ -553,11 +705,16 @@
           const f = input.files[0]; if (!f) return;
           const st = card.querySelector('.paStatus');
           if (f.size > 8 * 1024 * 1024) { st.textContent = 'Максимум 8 МБ'; return; }
-          st.textContent = 'Загрузка… 0%';
+          st.textContent = 'Загрузка…';
           try {
-            const res = await uploadWithRetry(`/api/admin/cover?category=${cNum}&name=${encodeURIComponent(f.name)}`, f, (p) => { st.textContent = `Загрузка… ${p}%`; });
-            // обновляем общественный кэш обложек сразу — размеры кнопок поменяются без перезагрузки
-            if (res && res.url) coversByCat[cNum] = { url: res.url, w: res.width || 16, h: res.height || 9 };
+            let res;
+            if (directMode) {
+              res = await directCoverUpload(cfg, cNum, f);
+              coversByCat[cNum] = { url: (await directCoverList(cfg))[cNum]?.url, w: res.width, h: res.height };
+            } else {
+              res = await uploadWithRetry(`/api/admin/cover?category=${cNum}&name=${encodeURIComponent(f.name)}`, f, (p) => { st.textContent = `Загрузка… ${p}%`; });
+              if (res && res.url) coversByCat[cNum] = { url: res.url, w: res.width || 16, h: res.height || 9 };
+            }
             st.textContent = 'ГОТОВО ✓';
             reload();
           } catch (e) { st.textContent = (e.message || 'Ошибка загрузки') + ' · попробуйте ещё раз'; }
@@ -566,10 +723,19 @@
       });
       body.querySelectorAll('.cvRemove').forEach(btn => btn.onclick = async () => {
         if (!confirm('Убрать обложку этой номинации?')) return;
-        try { delete coversByCat[btn.dataset.cat]; await api('/api/admin/cover/' + btn.dataset.cat, { method: 'DELETE', admin: true }); reload(); }
+        const cfg2 = sbCfg();
+        const direct = !!(cfg2 && sbBase(cfg2.u) && String(cfg2.k || '').trim());
+        try {
+          delete coversByCat[btn.dataset.cat];
+          if (direct) await directCoverRemove(cfg2, btn.dataset.cat);
+          else await api('/api/admin/cover/' + btn.dataset.cat, { method: 'DELETE', admin: true });
+          reload();
+        }
         catch (e) { alert(e.message); }
       });
     }
+
+    function drawCoversLegacyUnused() { void 0; }
 
     // ---------- ФОТО УЧАСТНИКОВ (вкладка «ФОТО») ----------
     function drawPeople() {
