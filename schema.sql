@@ -10,9 +10,10 @@ create table if not exists voters (
 create table if not exists videos (
   id uuid primary key default gen_random_uuid(),
   category text not null,          -- '01'..'14'
-  title text not null,
+  title text not null,             -- имя номинанта / название ролика
   path text not null,              -- путь файла в Storage (bucket "videos")
   size bigint default 0,
+  kind text not null default 'video', -- 'video' (Откат года) или 'image' (остальные номинации)
   created_at timestamptz default now()
 );
 
@@ -40,6 +41,15 @@ alter table videos enable row level security;
 alter table votes  enable row level security;
 alter table admins enable row level security;
 
--- Storage: bucket для видео (приватный, сервер отдаёт подписанные ссылки)
+-- Storage: bucket для видео и картинок (приватный, сервер отдаёт файлы через свой API)
 insert into storage.buckets (id, name, public) values ('videos', 'videos', false)
 on conflict (id) do nothing;
+
+
+-- ============ ОБНОВЛЕНИЕ ДЛЯ ТЕХ, У КОГО БАЗА УЖЕ СОЗДАНА РАНЬШЕ ============
+-- Если вы выполняли этот скрипт ДО появления картинок — просто выделите
+-- и выполните только эти две строки (остальной скрипт повторно выполнять не нужно):
+--
+--   alter table videos add column if not exists kind text not null default 'video';
+--   update videos set kind = case when category = '08' then 'video' else 'image' end;
+-- =============================================================================
