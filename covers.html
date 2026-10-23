@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ГРЕЧКА 2026 · Обложки номинаций</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Manrope:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  /* Страница загрузи обложек для статического сайта (GitHub Pages).
+     Работает без Node-сервера: картинка уходит напрямую в Supabase Storage,
+     запись о ней — в таблицу videos (category='CV'). Нужен только free
+     PostgREST-ключ service_role от вашего проекта Supabase. */
+  :root{--gold:#d6b36a}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0c0b09;color:#c9c4ba;font:14px/1.6 'Manrope',system-ui,sans-serif;padding:40px 20px 80px}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-family:'Cormorant Garamond',serif;font-size:44px;letter-spacing:-.02em;color:#efe8da;margin-bottom:6px}
+  h1 em{font-style:normal;color:var(--gold)}
+  .kicker{font-size:9px;letter-spacing:.3em;color:#8a857b;margin-bottom:24px}
+  .hint{color:#8a857b;font-size:12px;max-width:640px;margin-bottom:18px}
+  .danger{color:#e4806f}
+  .bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:#14120e;border:1px solid rgba(214,179,106,.2);padding:14px;margin-bottom:26px}
+  .bar label{font-size:9px;letter-spacing:.2em;color:#8a857b;display:block;margin-bottom:4px}
+  .bar input[type=password],.bar input[type=text]{background:#0c0b09;border:1px solid rgba(214,179,106,.3);color:#e8e0d2;height:38px;padding:0 12px;font:13px Manrope;min-width:260px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+  .card{border:1px solid rgba(214,179,106,.16);background:rgba(20,18,14,.7);padding:14px;display:flex;flex-direction:column;gap:10px}
+  .img{aspect-ratio:16/9;display:grid;place-items:center;overflow:hidden;border:1px dashed rgba(214,179,106,.3);background:#0a0a0a;color:#6f6a5c;font-size:11px;letter-spacing:.1em}
+  .img img{width:100%;height:100%;object-fit:cover;display:block}
+  .card b{font-size:12px;letter-spacing:.08em;color:#e8e0d2}
+  .row{display:flex;gap:8px}
+  button{height:36px;padding:0 14px;background:transparent;border:1px solid rgba(214,179,106,.3);color:#bfa86e;font:700 8px Manrope;letter-spacing:.16em;cursor:pointer}
+  button:hover{background:rgba(214,179,106,.12)}
+  button.danger{border-color:rgba(228,128,111,.4);color:#e4806f}
+  .status{min-height:16px;font-size:10px;color:#9fcf9a;text-align:center}
+  #savedMsg{font-size:10px;color:#9fcf9a}
+  @media(max-width:600px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="kicker">ГРЕЧКА 2026 · АДМИНКА БЕЗ СЕРВЕРА</div>
+  <h1>ОБЛОЖКИ <em>НОМИНАЦИЙ</em></h1>
+  <p class="hint">Картинка 16:9 станет фоном кнопки номинации на странице «НОМИНАЦИИ».
+  Размер кнопок автоматически подстраивается под пропорции загруженной картинки
+  (можно грузить и другие соотношения — например 4:3 или 21:9). Рекомендуем ~1280×720,
+  JPG/PNG/WEBP до 8 МБ. Файлы хранятся в Supabase (Storage + таблица videos), видны всем посетителям.</p>
+
+  <div class="bar">
+    <div>
+      <label>SUPABASE URL (Project Settings → API)</label>
+      <input type="text" id="sbUrl" placeholder="https://xxxxxxxx.supabase.co">
+    </div>
+    <div>
+      <label>SERVICE_ROLE KEY (секретный, только сюда)</label>
+      <input type="password" id="sbKey" placeholder="eyJhbGciOi...service_role...">
+    </div>
+    <button id="saveBtn">СОХРАНИТЬ КЛЮЧИ</button>
+    <span id="savedMsg"></span>
+  </div>
+  <p class="hint danger">⚠️ На статическом GitHub Pages этот ключ виден всем, кто откроет эту
+  страницу в инструментах разработчика (она сохранена в sessionStorage и не отправляется никуда,
+  кроме вашего Supabase). Пользуйтесь ей только со своего компьютера. Надёжнее всего — держать
+  сайт вместе с server.js (тогда обложки грузятся из обычной админки #admin).</p>
+
+  <div class="grid" id="grid"></div>
+</div>
+
+<script>
+(() => {
+  const categories = [
+    ['01','Король грч все'],['02','Человек мем года'],['04','Провал года'],
+    ['05','Киберкотлет года'],['06','Дед инсайд года'],['07','Дача года'],
+    ['08','Откат года'],['09','Выход года'],['10','Кружок года'],
+    ['11','Фотка года'],['12','Сырный соус года'],['13','Король пунктуальности'],['14','Игра года']
+  ];
+  const $ = (id) => document.getElementById(id);
+  const grid = $('grid');
+  let db = null;
+
+  // ---- мини-клиент Supabase (fetch, без npm) ----
+  function apiBase() { return $('sbUrl').value.trim().replace(/\/+$/, ''); }
+  function key() { return $('sbKey').value.trim(); }
+  async function sb(path, opts = {}) {
+    const r = await fetch(apiBase() + path, {
+      ...opts,
+      headers: { apikey: key(), Authorization: 'Bearer ' + key(),
+                 ...(opts.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+                 ...(opts.headers || {}) }
+    });
+    if (!r.ok) throw new Error((await r.text().catch(() => '')).slice(0, 200) || ('HTTP ' + r.status));
+    const ct = r.headers.get('content-type') || '';
+    return ct.includes('json') ? r.json() : r.arrayBuffer();
+  }
+
+  function ready() {
+    if (!apiBase().startsWith('http') || key().length < 20) { alert('Сначала заполните URL и service_role ключ и нажмите «Сохранить ключи»'); return false; }
+    return true;
+  }
+
+  $('saveBtn').onclick = () => {
+    if (!apiBase().startsWith('http') || key().length < 20) return alert('Заполните оба поля');
+    sessionStorage.setItem('grechka_sb', JSON.stringify({ u: apiBase(), k: key() }));
+    $('savedMsg').textContent = 'сохранено ✓';
+    refreshAll();
+  };
+  { const s = JSON.parse(sessionStorage.getItem('grechka_sb') || '{}');
+    if (s.u) $('sbUrl').value = s.u; if (s.k) $('sbKey').value = s.k; }
+
+  // ---- карточки ----
+  grid.innerHTML = categories.map(([n, t]) => `
+    <div class="card" data-cat="${n}">
+      <div class="img" id="img${n}">без обложки</div>
+      <b>${n} · ${t}</b>
+      <div class="row">
+        <button class="upl" data-cat="${n}">ЗАГРУЗИТЬ / ЗАМЕНИТЬ</button>
+        <button class="danger del" data-cat="${n}" hidden>УБРАТЬ</button>
+      </div>
+      <div class="status" id="st${n}"></div>
+      <input type="file" accept="image/*" hidden id="f${n}">
+    </div>`).join('');
+
+  async function loadCoverRow(n) {
+    // title хранится как «01» или «01 1280x720» — ищем по префиксу номинации
+    const rows = await sb(`/rest/v1/videos?select=id,path,title&category=eq.CV&title=like.${n}%2A&order=created_at.desc&limit=1`);
+    return rows && rows[0] ? rows[0] : null;
+  }
+
+  async function renderCard(n) {
+    const box = $('img' + n);
+    try {
+      const row = await loadCoverRow(n);
+      const del = grid.querySelector(`.del[data-cat="${n}"]`);
+      if (!row) { box.textContent = 'без обложки'; box.style.aspectRatio = '16/9'; del.hidden = true; return; }
+      const buf = await sb(`/storage/v1/object/videos/${row.path}`, { headers: { Accept: 'application/octet-stream' } });
+      const blob = new Blob([buf]);
+      const url = URL.createObjectURL(blob);
+      // реальные пропорции картинки — превью и кнопки сайта подстроятся под них
+      const dims = await new Promise(res => { const im = new Image(); im.onload = () => res({ w: im.naturalWidth, h: im.naturalHeight }); im.onerror = () => res(null); im.src = url; });
+      if (dims) box.style.aspectRatio = dims.w + '/' + dims.h;
+      box.innerHTML = `<img src="${url}" alt="">`;
+      del.hidden = false;
+    } catch (e) { box.textContent = 'нет доступа'; }
+  }
+
+  async function refreshAll() {
+    if (!ready()) return;
+    for (const [n] of categories) renderCard(n);
+  }
+
+  grid.querySelectorAll('.upl').forEach(btn => btn.onclick = () => { if (ready()) $('f' + btn.dataset.cat).click(); });
+
+  grid.querySelectorAll('input[type=file]').forEach(input => input.onchange = async () => {
+    const f = input.files[0]; if (!f) return;
+    const n = input.id.slice(1);
+    const st = $('st' + n);
+    if (f.size > 8 * 1024 * 1024) { st.textContent = 'Максимум 8 МБ'; return; }
+    try {
+      st.textContent = 'Загрузка…';
+      // читаем реальные пиксели картинки в браузере — они попадут в title и
+      // определят автоматический размер кнопок номинаций
+      const url0 = URL.createObjectURL(f);
+      const dims = await new Promise(res => { const im = new Image(); im.onload = () => res({ w: im.naturalWidth, h: im.naturalHeight }); im.onerror = () => res(null); im.src = url0; });
+      const id = crypto.randomUUID();
+      const ext = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' })[f.type] || 'jpg';
+      const path = `covers/${n}/${id}.${ext}`;
+      // 1) файл в Supabase Storage (bucket «videos»)
+      const form = new FormData();
+      form.append('cacheControl', '3600');
+      form.append('', new File([f], path, { type: f.type || 'image/jpeg' }));
+      await sb(`/storage/v1/object/videos/${path}`, { method: 'POST', body: form });
+      // 2) запись в таблице videos: category='CV', title='01 1280x720'
+      const old = await loadCoverRow(n);
+      await sb('/rest/v1/videos', { method: 'POST', headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({ id, category: 'CV', kind: 'image', title: dims ? `${n} ${dims.w}x${dims.h}` : n, path, size: f.size }) });
+      if (old) { // старая обложка убирается вместе с файлом
+        await sb(`/storage/v1/object/videos/${old.path}`, { method: 'DELETE' }).catch(() => {});
+        await sb(`/rest/v1/videos?id=eq.${old.id}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } }).catch(() => {});
+      }
+      st.textContent = 'ГОТОВО ✓';
+      renderCard(n);
+    } catch (e) { st.textContent = 'Ошибка: ' + e.message; }
+    input.value = '';
+  });
+
+  grid.querySelectorAll('.del').forEach(btn => btn.onclick = async () => {
+    const n = btn.dataset.cat;
+    if (!confirm('Убрать обложку этой номинации?')) return;
+    try {
+      const row = await loadCoverRow(n);
+      if (row) {
+        await sb(`/storage/v1/object/videos/${row.path}`, { method: 'DELETE' }).catch(() => {});
+        await sb(`/rest/v1/videos?id=eq.${row.id}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
+      }
+      renderCard(n);
+    } catch (e) { $('st' + n).textContent = 'Ошибка: ' + e.message; }
+  });
+
+  if ($('sbUrl').value && $('sbKey').value) refreshAll();
+})();
+</script>
+</body>
+</html>
