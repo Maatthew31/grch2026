@@ -246,3 +246,42 @@ body{min-height:100%;overflow-x:hidden}
 .categoryFeature.floating:before{display:none}
 .categoryFeature.floating>.featureInner:before{content:"";position:absolute;inset:0;z-index:1;background:linear-gradient(160deg,rgba(10,9,7,.35),rgba(8,8,8,.85));pointer-events:none}
 @media(max-width:900px){.categoryFeature.floating{position:relative;top:auto;left:auto;right:auto;height:auto;border:1px solid rgba(214,179,106,.24);background:linear-gradient(145deg,rgba(31,27,21,.9),rgba(11,11,11,.85));padding:30px;min-height:320px;box-shadow:0 30px 80px rgba(0,0,0,.35)}.categoryFeature.floating>.featureInner{position:static;border:0;background:transparent;padding:0;box-shadow:none;overflow:visible;transform:none!important}.categoryFeature.floating>.featureInner:before{display:none}}
+/* ===== Фикс v12: список номинаций по центру + окошко строго напротив выбранной кнопки =====
+   Раньше окошко «Открыть номинацию» было position:absolute и «прилипало» к левому краю всей секции
+   (а не к своей колонке) — поэтому оно наезжало на список и стояло выше нужной кнопки.
+   Теперь колонка с окошком — обычная колонка сетки той же высоты, что и список,
+   а окошко внутри неё сдвигается на нужную высоту скриптом (positionFeature в script.js). */
+.categoryFeature.floating{position:relative;top:auto;left:auto;right:auto;align-self:stretch;height:auto}
+.categoryFeature.floating>.cfCover{display:none}
+.categoryList{grid-column:1}
+.categoryFeature{grid-column:2}
+
+/* Широкие экраны: список ровно по центру страницы, окошко — справа от него */
+@media(min-width:1381px){
+  .categories{--listW:clamp(480px,calc(100vw - 900px),820px)}
+  .categoryLayout{grid-template-columns:minmax(0,1fr) var(--listW) minmax(0,1fr)}
+  .categoryList{grid-column:2}
+  .categoryFeature{grid-column:3}
+  .categoryFeature.floating>.featureInner{width:400px;max-width:none}
+  .categoryHead{max-width:var(--listW);margin-left:auto;margin-right:auto}
+}
+/* Телефон / узкое окно: одна колонка, как и раньше */
+@media(max-width:900px){
+  .categoryList,.categoryFeature{grid-column:auto}
+  .categoryFeature.floating{align-self:auto}
+}
+
+/* ===== Фикс v13: сетка фотографий одинаковая при любых размерах фото и длине названий ===== */
+.imageGrid{align-items:stretch}
+.videoCardI{height:100%}
+.imageWrap{aspect-ratio:4/5;min-height:0;max-height:none;height:auto;display:block;flex:0 0 auto}
+.imageWrap .imgBlur{position:absolute;inset:-20px;background-size:cover;background-position:center;filter:blur(22px) brightness(.45);transform:scale(1.1)}
+.imageWrap img{position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;object-fit:contain;z-index:1}
+.imageWrap .frame{z-index:2}
+.imageWrap .videoNum{z-index:3}
+.imageCaption{flex-direction:column;align-items:stretch;justify-content:space-between;flex-wrap:nowrap;gap:12px;min-height:0}
+.imageCaption b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.5;min-height:3em}
+.imageCaption .voteBtn{width:100%}
+
+/* ===== 9 лиц церемонии: на широком экране все в один ряд ===== */
+@media(min-width:1301px){.peopleGrid{grid-template-columns:repeat(9,minmax(0,1fr));gap:12px}}

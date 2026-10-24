@@ -1,2 +1,4 @@
-*.zip
-*.bundle
+  .env
+  node_modules/
+  *.zip
+  *.bundle

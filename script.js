@@ -8,12 +8,13 @@
     { name: 'РИЗЕН', role: 'Номинант', img: 'assets/person-5.svg' },
     { name: 'ГЭС', role: 'Номинант', img: 'assets/person-6.svg' },
     { name: 'АНТОН', role: 'Номинант', img: 'assets/person-7.svg' },
-    { name: 'МАКСОН', role: 'Номинант', img: 'assets/person-8.svg' }
+    { name: 'МАКСОН', role: 'Номинант', img: 'assets/person-8.svg' },
+    { name: 'ВАНЕК', role: 'Номинант', img: 'assets/person-9.svg' } // ← 9-й человек: замените НОВЫЙ на настоящее имя
   ];
   try {
     const saved = JSON.parse(localStorage.getItem('grechka_participants'));
-    if (Array.isArray(saved) && saved.length === participants.length) {
-      saved.forEach((p, i) => { if (p && p.img) participants[i] = { ...participants[i], ...p }; });
+    if (Array.isArray(saved)) {
+      saved.slice(0, participants.length).forEach((p, i) => { if (p && p.img) participants[i] = { ...participants[i], ...p }; });
     }
   } catch { /* ignore */ }
 
@@ -91,7 +92,8 @@
     }
     if (changed) {
       localStorage.setItem('grechka_participants', JSON.stringify(participants));
-      if (scene === 'participants' || scene === 'admin') render();
+      // в админке НЕ перерисовываем всё заново — иначе вкладка сбрасывается на «ОБЛОЖКИ»
+      if (scene === 'participants') render();
     }
   }).catch(() => {});
 
@@ -280,7 +282,7 @@
         <div class="peopleGrid">${participants.map(personCard).join('')}</div>
         <div class="centerAction"><button class="luxButton" id="openCategories"><span>ОТКРЫТЬ НОМИНАЦИИ</span><b>→</b></button></div>
       </section>`, 'УЧАСТНИКИ');
-    document.getElementById('openCategories').onclick = () => { pushHistory('categories'); navigate('categories'); };
+    document.getElementById('openCategories').onclick = () => { selected = categories[0]; pushHistory('categories'); navigate('categories'); };
   }
 
   function renderLogin() {
@@ -361,7 +363,13 @@
       let top = rowRect.top - listRect.top - (fH - rowRect.height) / 2;
       // не вылезаем за границы списка
       top = Math.max(0, Math.min(top, listRect.height - fH));
-      inner.style.transform = `translateY(${top}px)`;
+      if (!inner.dataset.placed) { // первая расстановка — мгновенно, без «заезда» сверху
+        inner.style.transition = 'none';
+        inner.style.transform = `translateY(${top}px)`;
+        void inner.offsetHeight;
+        inner.style.transition = '';
+        inner.dataset.placed = '1';
+      } else inner.style.transform = `translateY(${top}px)`;
     };
 
     const updateCategory = (number) => {
@@ -387,7 +395,18 @@
 
     positionFeature();
     requestAnimationFrame(positionFeature);
+    // после загрузки шрифтов высота окошка может чуть измениться — ставим его на место ещё раз
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(positionFeature);
     window.addEventListener('resize', positionFeature);
+    // если размеры списка или окошка поменялись (загрузились картинки, шрифты, появился скроллбар) — ставим окошко заново
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(() => positionFeature());
+      ro.observe(document.getElementById('categoryList'));
+      ro.observe(document.getElementById('featureInner'));
+    }
+    // страховка: ещё раз ставим окошко, когда страница точно «устоялась»
+    [150, 500, 1200].forEach(ms => setTimeout(positionFeature, ms));
+    window.addEventListener('load', positionFeature);
   }
 
   function confirmVote(video) {
@@ -454,8 +473,8 @@
         const media = videoMode
           ? `<div class="videoWrap"><video controls preload="metadata" playsinline src="${esc(v.url)}"></video><span class="videoNum">0${i + 1}</span></div>
              <div class="videoMeta"><div><small>ВИДЕО №0${i + 1}</small><strong>${esc(v.title)}</strong></div><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`
-          : `<div class="imageWrap"><img src="${esc(v.url)}" alt="${esc(v.title)}" loading="lazy" decoding="async"><span class="frame"></span><span class="videoNum">0${i + 1}</span></div>
-             <div class="imageCaption"><b>${esc(v.title)}</b><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`;
+          : `<div class="imageWrap"><span class="imgBlur" style="background-image:url('${esc(v.url)}')"></span><img src="${esc(v.url)}" alt="${esc(v.title)}" loading="lazy" decoding="async"><span class="frame"></span><span class="videoNum">0${i + 1}</span></div>
+             <div class="imageCaption"><b title="${esc(v.title)}">${esc(v.title)}</b><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`;
         return `<article class="videoCard ${videoMode ? 'videoCardV' : 'videoCardI'} ${mine ? 'mine' : ''}">${media}</article>`;
       }).join('');
       grid.querySelectorAll('.voteBtn:not([disabled])').forEach(btn => btn.onclick = async () => {
@@ -526,12 +545,13 @@
     input.focus();
   }
 
+  let adminTabMemo = 'covers';
   function adminDashboard() {
     const root = document.getElementById('adminRoot');
     if (!root) return; // админку уже закрыли/перерисовали — выходим молча (иначе краш выбрасывает из админки)
     const cfgD = sbCfg();
     const directAdmin = store.admin === 'direct' || !!(cfgD && sbBase(cfgD.u) && String(cfgD.k || '').trim());
-    let tab = 'covers';
+    let tab = (directAdmin && adminTabMemo === 'results') ? 'covers' : adminTabMemo; // запоминаем вкладку: даже если админку перерисуют, вы останетесь где были
     let cat = categories[0].n;
     let overview = { videos: [], voters: [] };
     const queue = []; // { id, name, pct, state, error }
@@ -539,7 +559,7 @@
     root.innerHTML = `
       <div class="adminHead">
         <div><div class="heroKicker">ГРЕЧКА 2026${directAdmin ? ' · РЕЖИМ GITHUB PAGES' : ''}</div><h1>АДМИНКА</h1></div>
-        <div class="adminTabs"><button data-tab="covers" class="${tab === 'covers' ? 'on' : ''}">ОБЛОЖКИ</button><button data-tab="videos" class="${tab === 'videos' ? 'on' : ''}">НОМИНАЦИИ</button><button data-tab="people">ФОТО</button>${directAdmin ? '' : '<button data-tab="results">ВЫБОР ЛЮДЕЙ</button>'}<button data-tab="out">ВЫЙТИ</button></div>
+        <div class="adminTabs"><button data-tab="covers" class="${tab === 'covers' ? 'on' : ''}">ОБЛОЖКИ</button><button data-tab="videos" class="${tab === 'videos' ? 'on' : ''}">НОМИНАЦИИ</button><button data-tab="people" class="${tab === 'people' ? 'on' : ''}">ФОТО</button>${directAdmin ? '' : `<button data-tab="results" class="${tab === 'results' ? 'on' : ''}">ВЫБОР ЛЮДЕЙ</button>`}<button data-tab="out">ВЫЙТИ</button></div>
       </div>
       <div id="adminBody"></div>`;
     const body = document.getElementById('adminBody');
@@ -593,7 +613,7 @@
       const t = e.target.closest('button')?.dataset.tab;
       if (!t) return;
       if (t === 'out') { store.admin = null; return adminLogin(); }
-      tab = t;
+      tab = adminTabMemo = t;
       root.querySelectorAll('.adminTabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
       reload();
     };
@@ -1032,7 +1052,9 @@
     }
 
     function drawResults() {
-      if (!overview.voters.length) { // режим GitHub Pages: голосов через БД без сервера не видно
+      // Раньше тут стояло «if (!overview.voters.length)» — и пока никто не проголосовал, админка
+      // ошибочно писала про GitHub Pages. Теперь сообщение только в настоящем режиме без сервера.
+      if (directAdmin) { // режим GitHub Pages: голосов через БД без сервера не видно
         body.innerHTML = `<div class="adminMain"><h2>Выбор людей</h2><p class="adminHint">В режиме GitHub Pages список голосов недоступен — здесь он работает только с запущенным server.js. Количество номинантов в каждой номинации смотрите во вкладке «НОМИНАЦИИ».</p></div>`;
         return;
       }

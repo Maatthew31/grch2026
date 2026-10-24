@@ -451,7 +451,7 @@ app.put('/api/admin/upload', async (req, res) => {
 });
 
 // фото номинанта для страницы «УЧАСТНИКИ»: PUT /api/admin/participant-photo?index=N
-const PARTICIPANT_COUNT = 8;
+const PARTICIPANT_COUNT = 9;
 app.put('/api/admin/participant-photo', async (req, res) => {
   try {
     if (!await adminFrom(req)) return res.status(401).json({ error: 'Нет доступа' });
