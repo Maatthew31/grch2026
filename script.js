@@ -9,7 +9,7 @@
     { name: 'ГЭС', role: 'Номинант', img: 'assets/person-6.svg' },
     { name: 'АНТОН', role: 'Номинант', img: 'assets/person-7.svg' },
     { name: 'МАКСОН', role: 'Номинант', img: 'assets/person-8.svg' },
-    { name: 'ВАНЕК', role: 'Номинант', img: 'assets/person-9.svg' } // ← 9-й человек: замените НОВЫЙ на настоящее имя
+    { name: 'НОВЫЙ', role: 'Номинант', img: 'assets/person-9.svg' } // ← 9-й человек: замените НОВЫЙ на настоящее имя
   ];
   try {
     const saved = JSON.parse(localStorage.getItem('grechka_participants'));
@@ -34,6 +34,12 @@
     ['14','Игра года','Главная игра года по версии комиссии, которой никто не видел.']
   ].map(([n,title,desc]) => ({n,title,desc}));
   const CAT_COUNT = categories.length; // 13 номинаций (номинация «03» удалена)
+  // Сколько голосов у зрителя в номинации (должно совпадать с VOTE_LIMITS в server.js; по умолчанию 1).
+  // Откат года (08), Кружок года (10), Игра года (14) — 3; Провал года (04) — 2; остальные — 1.
+  const VOTE_LIMITS = { '04': 2, '08': 3, '10': 3, '14': 3 };
+  const limitOf = (n) => VOTE_LIMITS[n] || 1;
+  const TOTAL_VOTES = categories.reduce((n, c) => n + limitOf(c.n), 0);
+  const votesIn = (n) => { const v = myVotes[n]; return Array.isArray(v) ? v : (v ? [v] : []); };
 
   const app = document.getElementById('app');
   // Восстановление сцены после перезагрузки страницы: адрес вида #scene/номер_номинации
@@ -56,7 +62,7 @@
     get admin() { return sessionStorage.getItem('grechka_admin'); },
     set admin(t) { t ? sessionStorage.setItem('grechka_admin', t) : sessionStorage.removeItem('grechka_admin'); }
   };
-  let myVotes = {};      // category -> videoId
+  let myVotes = {};      // category -> [videoId, ...] (голосов может быть несколько)
   let videosByCat = {};  // category -> [video]
   let coversByCat = {};  // category -> url обложки 16:9 (фон кнопки в списке номинаций)
 
@@ -79,23 +85,29 @@
   // понятное сообщение, а не «тихий» чёрный/сломанный экран.
   window.addEventListener('unhandledrejection', (e) => { console.error('[grechka]', e.reason); });
   window.addEventListener('error', (e) => { console.error('[grechka]', e.message); });
-  // Восстанавливаем загруженные из админки фото номинантов (видны всем посетителям)
-  api('/api/videos', {}).then(d => {
-    const pp = (d.videos && d.videos.PP) || [];
-    if (!pp.length) return;
-    let changed = false;
-    for (const item of pp) {
-      const m = item.title.match(/(\d+)\s*$/); // имя вида «ИМЯ 4» — индекс номинанта в конце
-      if (!m) continue;
-      const i = Number(m[1]) - 1;
-      if (i >= 0 && i < participants.length && participants[i].img !== item.url) { participants[i].img = item.url; changed = true; }
-    }
-    if (changed) {
-      localStorage.setItem('grechka_participants', JSON.stringify(participants));
+  // Фото участников: берём из публичного /api/participants (вход не нужен), поэтому лица
+  // видны сразу — и новому гостю, и без обновления страницы. Функцию можно вызывать повторно.
+  const preloadImg = (url) => new Promise(res => { const im = new Image(); im.onload = im.onerror = () => res(); im.src = url; });
+  async function loadParticipantPhotos() {
+    try {
+      const d = await api('/api/participants');
+      const pp = d.photos || [];
+      let changed = false;
+      for (const item of pp) {
+        const m = item.title.match(/(\d+)\s*$/); // имя вида «ИМЯ 4» — индекс номинанта в конце
+        if (!m) continue;
+        const i = Number(m[1]) - 1;
+        if (i >= 0 && i < participants.length && participants[i].img !== item.url) { participants[i].img = item.url; changed = true; }
+      }
+      if (!changed) return;
+      try { localStorage.setItem('grechka_participants', JSON.stringify(participants)); } catch { /* ignore */ }
+      // подгружаем картинки заранее, чтобы лица не «выскакивали» по одному
+      await Promise.all(participants.map(p => preloadImg(p.img)));
       // в админке НЕ перерисовываем всё заново — иначе вкладка сбрасывается на «ОБЛОЖКИ»
       if (scene === 'participants') render();
-    }
-  }).catch(() => {});
+    } catch { /* сервер спит или недоступен — останутся картинки по умолчанию */ }
+  }
+  loadParticipantPhotos();
 
   // обложка: { url, w, h } (старый формат — просто строка url, считаем 16:9)
   // размеры обложки: «1280x720» из строки title БД либо из объекта {url,w,h};
@@ -276,6 +288,7 @@
   }
 
   function renderParticipants() {
+    if (!renderParticipants.fetched) { renderParticipants.fetched = true; loadParticipantPhotos(); }
     shell(`
       <section class="participants sceneIn">
         <div class="sectionHead"><div class="heroKicker">ПЕРЕД НАЧАЛОМ</div><h1>ЛИЦА<br><em>ЦЕРЕМОНИИ</em></h1><p>Те самые люди, которым каким-то образом удалось попасть в историю Гречки.</p></div>
@@ -290,7 +303,7 @@
       <section class="login sceneIn">
         <div class="heroKicker">ПЕРЕД ГОЛОСОВАНИЕМ</div>
         <h1 class="loginTitle">КАК ВАС<br><em>ЗОВУТ?</em></h1>
-        <p class="loginNote">Имя нужно, чтобы засчитать ваши голоса. В каждой номинации можно проголосовать только один раз — изменить выбор будет нельзя.</p>
+        <p class="loginNote">Имя нужно, чтобы засчитать ваши голоса. Голос в каждой номинации отдаётся один раз (в некоторых номинациях — несколько, за разных номинантов) — изменить выбор будет нельзя.</p>
         <div class="loginForm">
           <input id="voterName" class="textInput" maxlength="40" placeholder="Имя или ник" autocomplete="off">
           <button class="luxButton" id="voterGo"><span>ПРОДОЛЖИТЬ</span><b>→</b></button>
@@ -304,6 +317,7 @@
       try {
         const d = await api('/api/register', { method: 'POST', body: { name: input.value } });
         store.voter = { token: d.token, name: d.name };
+        await Promise.race([loadParticipantPhotos(), new Promise(r => setTimeout(r, 4000))]); // лица готовы к показу
         pushHistory('participants'); navigate('participants');
       } catch (e) { err.textContent = e.message; }
     };
@@ -316,18 +330,20 @@
     try { await loadVideos(); } catch { return; }
     // Обложка 16:9 фоном кнопки + затемняющий градиент, чтобы текст читался всегда.
     const rows = categories.map(c => {
-      const done = !!myVotes[c.n];
+      const got = votesIn(c.n).length, lim = limitOf(c.n);
+      const done = got >= lim;           // все голоса в этой номинации отданы
+      const partial = got > 0 && !done;  // часть голосов отдана (в номинациях с несколькими голосами)
       const cv = coverDims(coversByCat[c.n]);
       // высота кнопки = ширина списка × пропорции загруженной картинки —
       // размер кнопок автоматически подстраивается под размер обложки, картинка целиком (без обрезки)
       const ratio = cv && cv.w > 0 && cv.h > 0 ? cv.h / cv.w : 9 / 16;
       const vars = cv ? `--cover:url('${esc(cv.url)}');--rowH:calc(var(--rowW,100%) * ${ratio.toFixed(5)})` : '';
-      return `<button class="categoryRow ${selected.n === c.n ? 'active' : ''} ${done ? 'done' : ''} ${cv ? 'hasCover' : ''}" data-category="${c.n}" style="${vars}"><span class="crNum">${c.n}</span><strong>${esc(c.title)}</strong><i>${done ? '✓' : '↗'}</i></button>`;
+      return `<button class="categoryRow ${selected.n === c.n ? 'active' : ''} ${done ? 'done' : ''} ${partial ? 'partial' : ''} ${cv ? 'hasCover' : ''}" data-category="${c.n}" style="${vars}"><span class="crNum">${c.n}</span><strong>${esc(c.title)}</strong>${got ? `<em class="voteBadge">${done ? '✓ ГОЛОС ОТДАН' : '✓ ' + got + ' ИЗ ' + lim}</em>` : ''}<i>${done ? '✓' : lim > 1 ? got + '/' + lim : '↗'}</i></button>`;
     }).join('');
-    const doneCount = Object.keys(myVotes).length;
+    const doneCount = categories.reduce((n, c) => n + Math.min(votesIn(c.n).length, limitOf(c.n)), 0);
     shell(`
       <section class="categories sceneIn">
-        <div class="sectionHead categoryHead"><div class="heroKicker">ГРЕЧКА 2026 · ${CAT_COUNT} КАТЕГОРИЙ · ВАШИ ГОЛОСА: ${doneCount}/${CAT_COUNT}</div><h1>НОМИНАЦИИ</h1><p>Выберите категорию. Судьба человечества подождёт.</p></div>
+        <div class="sectionHead categoryHead"><div class="heroKicker">ГРЕЧКА 2026 · ${CAT_COUNT} КАТЕГОРИЙ · ВАШИ ГОЛОСА: ${doneCount}/${TOTAL_VOTES}</div><h1>НОМИНАЦИИ</h1><p>Выберите категорию. Судьба человечества подождёт.</p></div>
         <div class="categoryLayout">
           <div class="categoryList" id="categoryList">${rows}</div>
           <aside class="categoryFeature" id="categoryFeature"><div class="cfCover" id="cfCover"></div><div class="featureInner" id="featureInner"><div class="featureTop"><span>${selected.n}</span><small>НОМИНАЦИЯ</small></div><h2>${esc(selected.title)}</h2><p>${esc(selected.desc)}</p><div class="featureRule"></div><button class="luxButton" id="openCategory"><span>ОТКРЫТЬ НОМИНАЦИЮ</span><b>→</b></button></div></aside>
@@ -409,6 +425,26 @@
     window.addEventListener('load', positionFeature);
   }
 
+  // Яркое окошко вместо системного alert() — стилизуется под сайт и хорошо читается
+  function showNotice(text, title = 'Внимание') {
+    return new Promise(resolve => {
+      const m = document.createElement('div');
+      m.className = 'modal';
+      m.innerHTML = `<div class="modalBox noticeBox" role="alertdialog" aria-modal="true">
+        <div class="modalIcon">!</div>
+        <h3>${esc(title)}</h3>
+        <p>${esc(text)}</p>
+        <div class="modalActions"><button class="luxButton" data-r="1"><span>ПОНЯТНО</span><b>✓</b></button></div>
+      </div>`;
+      const close = () => { m.remove(); document.removeEventListener('keydown', onKey); resolve(); };
+      const onKey = (e) => { if (e.key === 'Escape' || e.key === 'Enter') close(); };
+      m.addEventListener('click', e => { if (e.target === m || e.target.closest('[data-r]')) close(); });
+      document.addEventListener('keydown', onKey);
+      document.body.appendChild(m);
+      m.querySelector('[data-r]').focus();
+    });
+  }
+
   function confirmVote(video) {
     return new Promise(resolve => {
       const m = document.createElement('div');
@@ -416,7 +452,7 @@
       m.innerHTML = `<div class="modalBox" role="dialog" aria-modal="true">
         <div class="modalIcon">!</div>
         <h3>Выбор нельзя будет изменить</h3>
-        <p>Вы голосуете за <b>«${esc(video.title)}»</b> в номинации <b>«${esc(selected.title)}»</b>. После подтверждения изменить или отозвать голос не получится.</p>
+        <p>Вы голосуете за <b>«${esc(video.title)}»</b> в номинации <b>«${esc(selected.title)}»</b>.${limitOf(selected.n) > 1 ? ` Это ваш голос ${votesIn(selected.n).length + 1} из ${limitOf(selected.n)}.` : ''} После подтверждения изменить или отозвать голос не получится.</p>
         <div class="modalActions"><button class="ghostBtn" data-r="0">ОТМЕНА</button><button class="luxButton" data-r="1"><span>ДА, ГОЛОСУЮ</span><b>✓</b></button></div>
       </div>`;
       const close = (r) => { m.remove(); document.removeEventListener('keydown', onKey); resolve(r); };
@@ -450,7 +486,9 @@
     const list = videosByCat[selected.n] || [];
 
     const paint = () => {
-      const chosenId = myVotes[selected.n];
+      const chosen = votesIn(selected.n);       // за кого уже проголосовано
+      const limit = limitOf(selected.n);        // сколько голосов всего
+      const left = limit - chosen.length;       // сколько голосов осталось
       if (!list.length) {
         status.textContent = 'НОМИНАНТОВ ПОКА НЕТ';
         warn.style.display = 'none';
@@ -458,23 +496,28 @@
         return;
       }
       warn.style.display = '';
-      if (chosenId) {
-        status.textContent = 'ВАШ ГОЛОС ЗАСЧИТАН · ИЗМЕНИТЬ НЕЛЬЗЯ';
+      if (left <= 0) {
+        status.textContent = limit > 1 ? `ВСЕ ${limit} ГОЛОСА ОТДАНЫ · ИЗМЕНИТЬ НЕЛЬЗЯ` : 'ВАШ ГОЛОС ЗАСЧИТАН · ИЗМЕНИТЬ НЕЛЬЗЯ';
         warn.className = 'voteWarn locked';
-        warn.textContent = 'Вы уже проголосовали в этой номинации. Выбор окончательный.';
+        warn.textContent = limit > 1 ? 'Вы уже отдали все голоса в этой номинации. Выбор окончательный.' : 'Вы уже проголосовали в этой номинации. Выбор окончательный.';
+      } else if (limit > 1) {
+        status.textContent = `ГОЛОСОВ ОСТАЛОСЬ: ${left} ИЗ ${limit}`;
+        warn.className = 'voteWarn';
+        warn.innerHTML = `<b>Внимание:</b> в этой номинации у вас <b>${limit} голоса</b> — отдайте их за <b>разных</b> ${videoMode ? 'роликов' : 'номинантов'}. Каждый голос после подтверждения изменить нельзя.`;
       } else {
         status.textContent = videoMode ? 'ВЫБЕРИТЕ ОДИН РОЛИК' : 'ВЫБЕРИТЕ НОМИНАНТА';
         warn.className = 'voteWarn';
         warn.innerHTML = `<b>Внимание:</b> голосовать можно только один раз. После подтверждения изменить выбор нельзя.`;
       }
       grid.innerHTML = list.map((v, i) => {
-        const mine = chosenId === v.id;
-        const label = mine ? 'ВАШ ВЫБОР ✓' : chosenId ? 'ГОЛОС УЖЕ ОТДАН' : 'ОТДАТЬ ГОЛОС';
+        const mine = chosen.includes(v.id);
+        const label = mine ? 'ВАШ ВЫБОР ✓' : left <= 0 ? 'ГОЛОСА ОТДАНЫ' : 'ОТДАТЬ ГОЛОС';
+        const off = mine || left <= 0 ? 'disabled' : '';
         const media = videoMode
           ? `<div class="videoWrap"><video controls preload="metadata" playsinline src="${esc(v.url)}"></video><span class="videoNum">0${i + 1}</span></div>
-             <div class="videoMeta"><div><small>ВИДЕО №0${i + 1}</small><strong>${esc(v.title)}</strong></div><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`
+             <div class="videoMeta"><div><small>ВИДЕО №0${i + 1}</small><strong>${esc(v.title)}</strong></div><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${off}>${label}</button></div>`
           : `<div class="imageWrap"><span class="imgBlur" style="background-image:url('${esc(v.url)}')"></span><img src="${esc(v.url)}" alt="${esc(v.title)}" loading="lazy" decoding="async"><span class="frame"></span><span class="videoNum">0${i + 1}</span></div>
-             <div class="imageCaption"><b title="${esc(v.title)}">${esc(v.title)}</b><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${chosenId ? 'disabled' : ''}>${label}</button></div>`;
+             <div class="imageCaption"><b title="${esc(v.title)}">${esc(v.title)}</b><button class="voteBtn ${mine ? 'chosen' : ''}" data-vote="${esc(v.id)}" ${off}>${label}</button></div>`;
         return `<article class="videoCard ${videoMode ? 'videoCardV' : 'videoCardI'} ${mine ? 'mine' : ''}">${media}</article>`;
       }).join('');
       grid.querySelectorAll('.voteBtn:not([disabled])').forEach(btn => btn.onclick = async () => {
@@ -483,10 +526,10 @@
         if (!await confirmVote(video)) return;
         try {
           await api('/api/vote', { method: 'POST', body: { category: selected.n, videoId: video.id } });
-          myVotes[selected.n] = video.id;
+          myVotes[selected.n] = [...votesIn(selected.n), video.id];
         } catch (e) {
-          if (e.status === 409 && e.data.videoId) myVotes[selected.n] = e.data.videoId;
-          alert(e.message);
+          if (e.status === 409 && Array.isArray(e.data.videoIds)) myVotes[selected.n] = e.data.videoIds;
+          await showNotice(e.message, e.status === 409 ? 'Голос уже отдан' : 'Не получилось проголосовать');
         }
         paint();
       });
@@ -653,6 +696,7 @@
           }).join('')}</nav>
           <div class="adminMain">
             <h2>${esc(categories.find(c => c.n === cat).title)}</h2>
+            <p class="adminHint">У каждого зрителя в этой номинации: <b>${limitOf(cat)} ${limitOf(cat) === 1 ? 'голос' : limitOf(cat) < 5 ? 'голоса' : 'голосов'}</b>${limitOf(cat) > 1 ? ' (за разных номинантов)' : ''}</p>
             <div class="dropzone" id="dropzone" tabindex="0">
               <div class="dropIcon">⇪</div>
               <b>${videoMode ? 'Перетащите видео сюда' : 'Перетащите картинки сюда'}</b>
@@ -1065,14 +1109,14 @@
         <div class="resultList">${categories.map(c => {
           const vids = overview.videos.filter(v => v.category === c.n).sort((a, b) => b.voters.length - a.voters.length);
           const sum = vids.reduce((n, v) => n + v.voters.length, 0);
-          return `<div class="resultCat"><div class="rcHead"><span>${c.n}</span><strong>${esc(c.title)}</strong><em>голосов: ${sum}</em></div>${vids.length ? vids.map(v => `
+          return `<div class="resultCat"><div class="rcHead"><span>${c.n}</span><strong>${esc(c.title)}</strong><em>голосов: ${sum} · у зрителя ${limitOf(c.n)} ${limitOf(c.n) === 1 ? 'голос' : limitOf(c.n) < 5 ? 'голоса' : 'голосов'}</em></div>${vids.length ? vids.map(v => `
             <div class="rcVideo"><div class="rcTop"><b>${esc(v.title)}</b><i>${v.voters.length}</i></div><div class="bar"><i style="width:${sum ? Math.round(v.voters.length / sum * 100) : 0}%"></i></div>
             <div class="chips">${v.voters.length ? v.voters.map(n => `<span>${esc(n)}</span>`).join('') : '<small>пока никто не выбрал</small>'}</div></div>`).join('') : '<div class="emptyState sm">Нет номинантов</div>'}</div>`;
         }).join('')}</div>
         <h2 class="subH">КТО ЧТО ВЫБРАЛ</h2>
         <div class="voterTable">${overview.voters.length ? overview.voters.map(v => `
-          <div class="voterRow"><div class="vName"><b>${esc(v.name)}</b><small>${v.choices.length}/${CAT_COUNT}</small></div>
-          <div class="vChoices">${v.choices.length ? v.choices.sort((a, b) => a.category.localeCompare(b.category)).map(ch => `<span><em>${ch.category}</em> ${esc(categories.find(c => c.n === ch.category)?.title || '')} → <b>${esc(ch.title)}</b> <button class="chipDel" data-voter="${esc(ch.voterId)}" data-cat="${esc(ch.category)}" title="Удалить этот голос из базы">×</button></span>`).join('') : '<small>ещё не голосовал</small>'}</div></div>`).join('') : '<div class="emptyState">Пока никто не зашёл.</div>'}</div>`;
+          <div class="voterRow"><div class="vName"><b>${esc(v.name)}</b><small>${v.choices.length}/${TOTAL_VOTES}</small></div>
+          <div class="vChoices">${v.choices.length ? v.choices.sort((a, b) => a.category.localeCompare(b.category)).map(ch => `<span><em>${ch.category}</em> ${esc(categories.find(c => c.n === ch.category)?.title || '')} → <b>${esc(ch.title)}</b> <button class="chipDel" data-voter="${esc(ch.voterId)}" data-cat="${esc(ch.category)}" data-video="${esc(ch.videoId || '')}" title="Удалить этот голос из базы">×</button></span>`).join('') : '<small>ещё не голосовал</small>'}</div></div>`).join('') : '<div class="emptyState">Пока никто не зашёл.</div>'}</div>`;
     }
 
     // удаление голоса прямо из таблицы «КТО ЧТО ВЫБРАЛ» — запрос идёт на сервер, запись удаляется из БД.
@@ -1083,7 +1127,7 @@
       if (!btn) return;
       if (!confirm('Удалить этот голос? Зритель сможет проголосовать в этой номинации заново.')) return;
       try {
-        await api(`/api/admin/votes/${btn.dataset.voter}/${btn.dataset.cat}`, { method: 'DELETE', admin: true });
+        await api(`/api/admin/votes/${btn.dataset.voter}/${btn.dataset.cat}${btn.dataset.video ? '/' + btn.dataset.video : ''}`, { method: 'DELETE', admin: true }); // удаляется один конкретный голос
         reload();
       } catch (err) { alert(err.message); }
     });

@@ -103,7 +103,22 @@ app.post('/api/admin/login', async (req, res) => {
 // ---------- PUBLIC DATA ----------
 const VIDEO_CATS = ['08', '10']; // «Откат года» и «Кружок года» — видео; остальные номинации — картинки
 const isVideoCatN = (n) => VIDEO_CATS.includes(n);
+// Сколько голосов у одного зрителя в каждой номинации (по умолчанию — 1).
+// «Откат года» (08), «Кружок года» (10), «Игра года» (14) — по 3; «Провал года» (04) — 2. Остальные — по 1.
+const VOTE_LIMITS = { '04': 2, '08': 3, '10': 3, '14': 3 };
+const limitOf = (cat) => VOTE_LIMITS[cat] || 1;
 const COVER_CAT = 'CV'; // служебная «номинация»: обложки номинаций (16:9), рисуются фоном в списке категорий
+
+// Фото участников («ЛИЦА ЦЕРЕМОНИИ») — публичный список, регистрация не нужна.
+// Раньше фото брались из /api/videos, который требует вход, поэтому у нового гостя
+// лица появлялись только после обновления страницы.
+app.get('/api/participants', async (req, res) => {
+  try {
+    const { data } = await db.from('videos').select('id,title').eq('category', 'PP');
+    const photos = (data || []).map(v => ({ id: v.id, title: v.title, url: `/api/video/${v.id}` }));
+    res.json({ photos });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
+});
 
 app.get('/api/videos', async (req, res) => {
   try {
@@ -134,12 +149,13 @@ app.get('/api/videos', async (req, res) => {
       if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
       return String(a.title).localeCompare(String(b.title), 'ru');
     }));
+    // myVotes: номинация -> СПИСОК id, за которые зритель уже проголосовал (голосов может быть несколько)
     const myVotes = {};
     for (const vt of votes || []) {
       const vid = videos.find(v => v.id === vt.video_id);
-      if (vid) myVotes[vid.category] = vid.id;
+      if (vid) (myVotes[vid.category] ||= []).push(vid.id);
     }
-    res.json({ videos: byCat, myVotes, covers });
+    res.json({ videos: byCat, myVotes, covers, limits: VOTE_LIMITS });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
 });
 
@@ -297,9 +313,13 @@ app.post('/api/vote', async (req, res) => {
     if (!video) return res.status(404).json({ error: 'Номинант не найден' });
     if (video.category !== category) return res.status(400).json({ error: 'Номинант не из этой номинации' });
     const { data: existing } = await db.from('votes').select('video_id')
-      .eq('voter_id', voter.id).eq('category', category).maybeSingle();
-    if (existing) return res.status(409).json({ error: 'Вы уже голосовали в этой номинации', videoId: existing.video_id });
-    await db.from('votes').insert({ id: uid(), voter_id: voter.id, category, video_id: videoId });
+      .eq('voter_id', voter.id).eq('category', category);
+    const ids = (existing || []).map(e => e.video_id);
+    if (ids.includes(videoId)) return res.status(409).json({ error: 'Вы уже проголосовали за этого номинанта', videoIds: ids });
+    const limit = limitOf(category);
+    if (ids.length >= limit) return res.status(409).json({ error: limit > 1 ? `В этой номинации вы уже отдали все голоса (${limit} из ${limit})` : 'Вы уже голосовали в этой номинации', videoIds: ids });
+    const { error: insErr } = await db.from('votes').insert({ id: uid(), voter_id: voter.id, category, video_id: videoId });
+    if (insErr) throw insErr; // если в базе остался старый запрет «1 голос на номинацию», ошибка видна в логах Render
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
 });
@@ -316,12 +336,14 @@ app.patch('/api/admin/videos/:id', async (req, res) => {
 
 // удаление конкретного голоса (зритель + номинация) — запись удаляется из БД,
 // после этого человек может проголосовать в этой номинации заново
-app.delete('/api/admin/votes/:voterId/:category', async (req, res) => {
+app.delete('/api/admin/votes/:voterId/:category/:videoId?', async (req, res) => {
   try {
     if (!await adminFrom(req)) return res.status(401).json({ error: 'Нет доступа' });
     const { voterId, category } = req.params;
     if (!/^\d{2}$/.test(category)) return res.status(400).json({ error: 'Некорректная номинация' });
-    const { error } = await db.from('votes').delete().eq('voter_id', voterId).eq('category', category);
+    let q = db.from('votes').delete().eq('voter_id', voterId).eq('category', category);
+    if (req.params.videoId) q = q.eq('video_id', req.params.videoId); // без videoId — удаляются все голоса в номинации
+    const { error } = await q;
     if (error) throw error;
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Ошибка сервера' }); }
@@ -556,10 +578,12 @@ app.get('/api/admin/overview', async (req, res) => {
     ]);
     const nameOf = Object.fromEntries((voters || []).map(v => [v.id, v.name]));
     res.json({
+      limits: VOTE_LIMITS,
       voters: (voters || []).map(v => ({
         name: v.name,
         choices: (votes || []).filter(t => t.voter_id === v.id).map(t => ({
           voterId: v.id,
+          videoId: t.video_id,
           category: t.category,
           title: videos?.find(x => x.id === t.video_id)?.title || '?'
         }))

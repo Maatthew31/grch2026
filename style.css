@@ -285,3 +285,54 @@ body{min-height:100%;overflow-x:hidden}
 
 /* ===== 9 лиц церемонии: на широком экране все в один ряд ===== */
 @media(min-width:1301px){.peopleGrid{grid-template-columns:repeat(9,minmax(0,1fr));gap:12px}}
+
+/* ===== Фикс v16: обложки номинаций в полном цвете (без затемнения) + пометки «выбрано/проголосовано» ===== */
+.categoryRow:before,
+.categoryRow.hasCover:before,
+.categoryRow:hover:before,
+.categoryRow.active:before{filter:none}
+.categoryRow.hasCover:before{opacity:1}
+/* вместо тёмного градиента — только рамка поверх картинки (золотая у выбранной номинации) */
+.categoryRow:after,
+.categoryRow.hasCover:after{background:none;opacity:1;z-index:3;pointer-events:none;border:3px solid transparent;transition:border-color .3s ease,box-shadow .3s ease}
+.categoryRow.active:after{border-color:var(--gold,#d6b36a);box-shadow:inset 0 0 28px rgba(214,179,106,.28)}
+.categoryRow.active{box-shadow:none}
+/* чтобы текст читался на любой картинке — маленькие тёмные «плашки» только под текстом */
+.categoryRow.hasCover .crNum,
+.categoryRow.hasCover strong,
+.categoryRow.hasCover i{background:none;-webkit-backdrop-filter:none;backdrop-filter:none;padding:0;justify-self:start;text-shadow:0 1px 3px rgba(0,0,0,.95),0 2px 14px rgba(0,0,0,.85)}
+.categoryRow.hasCover i{justify-self:end;color:#f3e3b0}
+/* пометка на кнопке: за эту номинацию вы уже проголосовали */
+.voteBadge{position:absolute;top:12px;right:14px;z-index:4;font-style:normal;font:700 9px Manrope,sans-serif;letter-spacing:.16em;padding:6px 11px;background:rgba(8,8,8,.78);color:#e8d9ab;border:1px solid rgba(214,179,106,.55)}
+.categoryRow.done .voteBadge{background:linear-gradient(135deg,#e5c77e,#a77d35);color:#17130c;border-color:transparent;box-shadow:0 4px 18px rgba(0,0,0,.4)}
+@media(max-width:600px){.voteBadge{top:8px;right:8px;font-size:8px;padding:5px 8px}}
+
+
+/* ===== v17: яркое окошко уведомлений/подтверждения + без плашек под текстом номинаций ===== */
+.modal{background:rgba(0,0,0,.78)}
+.modalBox{background:linear-gradient(145deg,#2e281d,#17140f);border:1px solid #e5c77e;box-shadow:0 0 0 1px rgba(229,199,126,.25),0 0 60px rgba(229,199,126,.22),0 40px 100px rgba(0,0,0,.7)}
+.modalIcon{border-color:#ffb199;color:#ffd2c4;background:rgba(255,140,110,.14);box-shadow:0 0 22px rgba(255,140,110,.35)}
+.modalBox h3{color:#fff6e0}
+.modalBox p{color:#efe9dc}
+.modalBox p b{color:#ffe29a}
+.noticeBox{border-color:#ffd77a}
+.noticeBox .luxButton{background:linear-gradient(135deg,#f0d28a,#b88a3a);color:#17130c;border-color:transparent}
+.noticeBox .luxButton span,.noticeBox .luxButton b{color:#17130c}
+.categoryRow.hasCover strong{font-weight:600;color:#fff}
+.categoryRow.hasCover .crNum{color:#f3e3b0}
+
+/* ===== v18: окошко «Открыть номинацию» — яркое =====
+   Причина тусклости: тёмная накладка (:before, z-index:1) лежала ПОВЕРХ текста и кнопки и гасила их.
+   Теперь содержимое выше накладки, накладка светлее, текст и рамка ярче. */
+.categoryFeature.floating>.featureInner,
+.categoryFeature{background:linear-gradient(145deg,rgba(74,62,40,.96),rgba(34,29,21,.94));border:1px solid #e5c77e;box-shadow:0 0 0 1px rgba(229,199,126,.2),0 0 50px rgba(229,199,126,.2),0 30px 80px rgba(0,0,0,.5)}
+.categoryFeature.floating>.featureInner:before{background:linear-gradient(160deg,rgba(10,9,7,.05),rgba(10,9,7,.4))}
+.featureInner>*{position:relative;z-index:2}
+.cfCover.on{opacity:.85;filter:grayscale(0) brightness(.95)}
+.featureTop span{color:#f3d891;text-shadow:0 0 18px rgba(243,216,145,.35)}
+.featureTop small{color:#e8dcc0}
+.categoryFeature h2{color:#fffaf0;text-shadow:0 2px 18px rgba(0,0,0,.55)}
+.categoryFeature p{color:#f1eadb;text-shadow:0 1px 10px rgba(0,0,0,.6)}
+.featureRule{background:rgba(243,216,145,.55)}
+.categoryFeature .luxButton{background:linear-gradient(135deg,#f6dc95,#c0923f);color:#17130c;border-color:rgba(255,240,200,.8);box-shadow:0 10px 34px rgba(229,199,126,.35)}
+.categoryFeature .luxButton span,.categoryFeature .luxButton b{color:#17130c}
