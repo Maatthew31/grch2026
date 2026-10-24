@@ -35,8 +35,8 @@
   ].map(([n,title,desc]) => ({n,title,desc}));
   const CAT_COUNT = categories.length; // 13 номинаций (номинация «03» удалена)
   // Сколько голосов у зрителя в номинации (должно совпадать с VOTE_LIMITS в server.js; по умолчанию 1).
-  // Откат года (08), Кружок года (10), Игра года (14) — 3; Провал года (04) — 2; остальные — 1.
-  const VOTE_LIMITS = { '04': 2, '08': 3, '10': 3, '14': 3 };
+  // Откат года (08), Кружок года (10), Игра года (14) — 3; Провал года (04) и Выход года (09) — 2; остальные — 1.
+  const VOTE_LIMITS = { '04': 2, '08': 3, '09': 2, '10': 3, '14': 3 };
   const limitOf = (n) => VOTE_LIMITS[n] || 1;
   const TOTAL_VOTES = categories.reduce((n, c) => n + limitOf(c.n), 0);
   const votesIn = (n) => { const v = myVotes[n]; return Array.isArray(v) ? v : (v ? [v] : []); };
